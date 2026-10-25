@@ -1,23 +1,39 @@
-/* The menu: no extra margin; the glass background is handled by Liquid Glass */
-.quick-settings {
-    padding: 0;
-    min-width: 0;
-    /* The system theme paints a dark background on the menu: the same element
-       carries both "popup-menu-content" (background-color: rgba(36,36,36,0.92))
-       and "quick-settings", and the theme also applies a black border-image at
-       25% (assets/menu_x2.svg). That was the "black translucent background"
-       seen behind the tiles. We remove it here: underneath there is only the
-       Liquid Glass. (St explicitly supports "border-image: none".) */
-    background-color: transparent;
-    background-image: none;
-    border-image: none;
-    box-shadow: none;
+/* 1. Transparent popover container (Zero enclosing dark background) */
+.mac-cc-quick-settings,
+.mac-cc-quick-settings .popup-menu-content,
+.popup-menu-boxpointer.mac-cc-quick-settings,
+.quick-settings-menu.mac-cc-quick-settings,
+.quick-settings-menu.mac-cc-quick-settings .popup-menu-content,
+.quick-settings,
+.quick-settings.popup-menu-content,
+.quick-settings .popup-menu-content,
+.popup-menu-content.quick-settings {
+    -arrow-background-color: transparent !important;
+    -arrow-border-color: transparent !important;
+    -arrow-border-width: 0px !important;
+    -arrow-border-radius: 0px !important;
+    -boxpointer-gap: 0px !important;
+    background-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    border-image: none !important;
+    background-image: none !important;
+    box-shadow: none !important;
+    border-radius: 0px !important;
+    padding: 0px !important;
+    margin: 0px !important;
 }
 
-.mac-cc {
+.mac-cc,
+.mac-subview {
     padding: 22px;
     spacing: 17px;
     width: 310px;
+    background-color: transparent !important;
+    background: transparent !important;
+    border: none !important;
+    border-image: none !important;
+    box-shadow: none !important;
     /* MacOS font (San Francisco). It is the only SF present on the system. */
     font-family: "SF UI Text", sans-serif;
 }

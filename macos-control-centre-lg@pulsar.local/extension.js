@@ -647,6 +647,7 @@ export default class MacControlCentre extends Extension {
             this._colorSettings = null;
         }
 
+        this._applyTransparentContainer(true);
         this._buildPanel();
 
         // Removes the original Quick Settings content from the menu.
@@ -717,9 +718,24 @@ export default class MacControlCentre extends Extension {
         } catch (e) { /* ignore */ }
         for (const [child, i] of this._removed ?? [])
             this._qs.menu.box.insert_child_at_index(child, i);
+        this._applyTransparentContainer(false);
         this._removed = [];
         this._ifaceSettings = this._notifSettings = this._colorSettings = null;
         this._mixer = null;
+    }
+
+    _applyTransparentContainer(enable) {
+        const menu = this._qs?.menu;
+        if (!menu) return;
+        const cls = 'mac-cc-quick-settings';
+
+        for (const actor of [menu.actor, menu.box, menu._boxPointer, menu._boxPointer?.bin]) {
+            if (!actor) continue;
+            if (enable)
+                actor.add_style_class_name(cls);
+            else
+                actor.remove_style_class_name(cls);
+        }
     }
 
     /* Cascading entrance of the tiles when the panel opens.
