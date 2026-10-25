@@ -41,15 +41,16 @@
 .mac-row { spacing: 17px; }
 .mac-col { spacing: 17px; width: 146px; }
 
-/* Standard tiles: 146 x 65 - transparency tuned for Liquid Glass */
+/* Standard tiles: 146 x 65 - transparency tuned for Liquid Glass and Blur */
 .mac-tile {
     width: 146px;
     min-width: 146px;
     max-width: 146px;
     height: 65px;
     border-radius: 32px;
-    background-color: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     color: white;
     padding: 0;
 }
@@ -157,8 +158,9 @@
     max-width: 65px;
     height: 65px;
     border-radius: 119px;
-    background-color: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     color: white;
     padding: 0;
 }
@@ -186,8 +188,9 @@
     min-height: 146px;
     max-height: 146px;
     border-radius: 29px;
-    background-color: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     padding: 0;
 }
 
@@ -277,8 +280,9 @@
        would show. 32.5 is less than half the height (34), so the shape stays
        valid. */
     border-radius: 32.5px;
-    background-color: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
     spacing: 1px;
 }
 /* Same minimum height for both rows: the volume row also contains the AirPlay
