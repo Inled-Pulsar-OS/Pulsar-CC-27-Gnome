@@ -171,17 +171,17 @@ const LG_OVERRIDE = 'background-color: transparent !important;';
  * No .po/.mo files to compile: the package stays a plain "install.sh". */
 const STRINGS = {
     // key:  night       dnd                 display     sound     notPlaying              on        off
-    en: {night: 'Night Shift', dnd: 'Do Not Disturb', display: 'Display', sound: 'Sound',
+    en: {night: 'Night Shift', dnd: 'Do Not Disturb', display: 'Display', sound: 'Sound', mic: 'Microphone', output: 'Output', input: 'Input',
          notPlaying: 'Not Playing', on: 'On', off: 'Off'},
-    it: {night: 'Luce notturna', dnd: 'Non disturbare', display: 'Schermo', sound: 'Audio',
+    it: {night: 'Luce notturna', dnd: 'Non disturbare', display: 'Schermo', sound: 'Audio', mic: 'Microfono', output: 'Uscita', input: 'Ingresso',
          notPlaying: 'Non in riproduzione', on: 'Attivo', off: 'Non attivo',
          onF: 'Attiva', offF: 'Non attiva'},          // "Luce notturna" is feminine
-    fr: {night: 'Lumière nocturne', dnd: 'Ne pas déranger', display: 'Écran', sound: 'Son',
+    fr: {night: 'Lumière nocturne', dnd: 'Ne pas déranger', display: 'Écran', sound: 'Son', mic: 'Microphone', output: 'Sortie', input: 'Entrée',
          notPlaying: 'Aucune lecture', on: 'Activé', off: 'Désactivé',
          onF: 'Activée', offF: 'Désactivée'},
-    de: {night: 'Nachtlicht', dnd: 'Nicht stören', display: 'Bildschirm', sound: 'Ton',
+    de: {night: 'Nachtlicht', dnd: 'Nicht stören', display: 'Bildschirm', sound: 'Ton', mic: 'Mikrofon', output: 'Ausgabe', input: 'Eingabe',
          notPlaying: 'Keine Wiedergabe', on: 'Ein', off: 'Aus'},
-    es: {night: 'Modo nocturno', dnd: 'No molestar', display: 'Pantalla', sound: 'Sonido',
+    es: {night: 'Modo nocturno', dnd: 'No molestar', display: 'Pantalla', sound: 'Sonido', mic: 'Micrófono', output: 'Salida', input: 'Entrada',
          notPlaying: 'Sin reproducción', on: 'Activado', off: 'Desactivado'},
     pt: {night: 'Modo noturno', dnd: 'Não incomodar', display: 'Ecrã', sound: 'Som',
          notPlaying: 'Nada em reprodução', on: 'Ativado', off: 'Desativado'},
@@ -898,12 +898,15 @@ export default class MacControlCentre extends Extension {
 
         /* Sliders */
         this._display = sliderTile(tr('display'), 'mc:sun-min', 'mc:sun-max');
-        this._sound = sliderTile(tr('sound'), 'mc:speaker-low', 'mc:speaker-high', () => {
-            this._qs.menu.close();
-            launch('gnome-control-center sound');
+        this._sound = sliderTile(tr('sound'), 'mc:speaker-low', 'mc:speaker-high', (btn) => {
+            this._openPanel('sound', btn || this._sound);
+        });
+        this._mic = sliderTile(tr('mic'), 'audio-input-microphone-low-symbolic', 'audio-input-microphone-high-symbolic', (btn) => {
+            this._openPanel('sound', btn || this._mic);
         });
         panel.add_child(this._display);
         panel.add_child(this._sound);
+        panel.add_child(this._mic);
 
         this._display.slider.connect('notify::value', () => {
             if (this._building)
@@ -924,11 +927,28 @@ export default class MacControlCentre extends Extension {
             if (this._building)
                 return;
             try {
+                this._mixer ??= Volume.getMixerControl();
                 const sink = this._mixer.get_default_sink();
-                sink.volume = this._sound.slider.value * this._mixer.get_vol_max_norm();
-                sink.push_volume();
+                if (sink) {
+                    sink.volume = this._sound.slider.value * this._mixer.get_vol_max_norm();
+                    sink.push_volume();
+                }
             } catch (e) {
                 console.warn(`macos-cc: volume: ${e}`);
+            }
+        });
+        this._mic.slider.connect('notify::value', () => {
+            if (this._building)
+                return;
+            try {
+                this._mixer ??= Volume.getMixerControl();
+                const source = this._mixer.get_default_source();
+                if (source) {
+                    source.volume = this._mic.slider.value * this._mixer.get_vol_max_norm();
+                    source.push_volume();
+                }
+            } catch (e) {
+                console.warn(`macos-cc: mic volume: ${e}`);
             }
         });
 
@@ -938,7 +958,7 @@ export default class MacControlCentre extends Extension {
             this._wifi, this._bt, this._night,
             this._mediaTile, this._stage, this._mirror,
             this._dark, this._shot, this._dnd,
-            this._display, this._sound,
+            this._display, this._sound, this._mic,
         ];
         for (const a of this._enterActors)
             pivot(a);
@@ -1116,12 +1136,59 @@ export default class MacControlCentre extends Extension {
 
         propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager',
             'org.freedesktop.NetworkManager', 'WirelessEnabled', on => {
-                setOn(this._wifi._bubble, !!on, this._wifi); // Uses _bubble instead of the whole tile!
-                this._wifi._sub.text = on ? tr('on') : tr('off');
+                const wifiOn = !!on;
+                setOn(this._wifi._bubble, wifiOn, this._wifi);
+                if (!wifiOn) {
+                    this._wifi._sub.text = tr('off');
+                    return;
+                }
+                this._wifi._sub.text = tr('on');
+                // Check active Wi-Fi connection / SSID
+                propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager',
+                    'org.freedesktop.NetworkManager', 'PrimaryConnection', primary => {
+                        if (primary && primary !== '/') {
+                            propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', primary,
+                                'org.freedesktop.NetworkManager.Connection.Active', 'Type', type => {
+                                    if (type === '802-11-wireless') {
+                                        propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', primary,
+                                            'org.freedesktop.NetworkManager.Connection.Active', 'Id', id => {
+                                                if (id) this._wifi._sub.text = String(id);
+                                            });
+                                        return;
+                                    }
+                                    this._checkWifiActiveConnections();
+                                });
+                        } else {
+                            this._checkWifiActiveConnections();
+                        }
+                    });
             });
+
         propGet(Gio.DBus.system, 'org.bluez', '/org/bluez/hci0', 'org.bluez.Adapter1', 'Powered', on => {
-            setOn(this._bt._bubble, !!on, this._bt);
-            this._bt._sub.text = on ? tr('on') : tr('off');
+            const btOn = !!on;
+            setOn(this._bt._bubble, btOn, this._bt);
+            if (!btOn) {
+                this._bt._sub.text = tr('off');
+                return;
+            }
+            this._bt._sub.text = tr('on');
+            Gio.DBus.system.call('org.bluez', '/', 'org.freedesktop.DBus.ObjectManager',
+                'GetManagedObjects', null, GLib.VariantType.new('(a{oa{sa{sv}}})'),
+                NONE, -1, null, (c, r) => {
+                    try {
+                        const objs = c.call_finish(r).deepUnpack()[0];
+                        for (const path of Object.keys(objs)) {
+                            const dev = objs[path]?.['org.bluez.Device1'];
+                            if (dev && dev.Connected) {
+                                const name = dev.Alias || dev.Name || path.split('/').pop();
+                                if (name) {
+                                    this._bt._sub.text = String(name);
+                                    break;
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                });
         });
 
         const night = this._colorSettings?.get_boolean('night-light-enabled') ?? false;
@@ -1156,12 +1223,33 @@ export default class MacControlCentre extends Extension {
             const sink = this._mixer.get_default_sink();
             if (sink)
                 this._sound.slider.value = Math.min(1, sink.volume / this._mixer.get_vol_max_norm());
+            const source = this._mixer.get_default_source();
+            if (source && this._mic)
+                this._mic.slider.value = Math.min(1, source.volume / this._mixer.get_vol_max_norm());
         } catch (e) {
             console.warn(`macos-cc: mixer unavailable: ${e}`);
         }
 
         this._building = false;
         this._refreshMedia();
+    }
+
+    _checkWifiActiveConnections() {
+        propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager',
+            'org.freedesktop.NetworkManager', 'ActiveConnections', conns => {
+                if (!conns || !conns.length) return;
+                for (const p of conns) {
+                    propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', p,
+                        'org.freedesktop.NetworkManager.Connection.Active', 'Type', type => {
+                            if (type === '802-11-wireless') {
+                                propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', p,
+                                    'org.freedesktop.NetworkManager.Connection.Active', 'Id', id => {
+                                        if (id) this._wifi._sub.text = String(id);
+                                    });
+                            }
+                        });
+                }
+            });
     }
 
     // Changes the play/pause glyph. With animations enabled it uses a

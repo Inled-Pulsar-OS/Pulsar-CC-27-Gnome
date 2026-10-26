@@ -843,6 +843,87 @@ export function crea(ext, h) {
         return list;
     }
 
+    function skeletonSound() {
+        detailCont.add_child(backRow());
+        detailCont.add_child(sep());
+        detailCont.add_child(headerRow(tr('sound', 'Sound'), null));
+        detailCont.add_child(sep());
+        detailCont.add_child(section(tr('output', 'Output Devices')));
+        const listOut = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
+        detailCont.add_child(scrollList(listOut));
+        detailCont.add_child(sep());
+        detailCont.add_child(section(tr('input', 'Input Devices')));
+        const listIn = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true});
+        detailCont.add_child(scrollList(listIn));
+        detailCont.add_child(sep());
+        detailCont.add_child(settingsRow('gnome-control-center sound', 'Sound Settings…', 'mac-chip-blue'));
+        populateSound(listOut, listIn);
+    }
+
+    function populateSound(listOut, listIn) {
+        clearChildren(listOut);
+        clearChildren(listIn);
+        try {
+            const mixer = ext._mixer;
+            if (!mixer) {
+                listOut.add_child(infoRow(tr('noDevices', 'No devices.')));
+                return;
+            }
+            const defSink = mixer.get_default_sink();
+            const sinks = mixer.get_sinks() || [];
+            if (!sinks.length) {
+                listOut.add_child(infoRow(tr('noDevices', 'No output devices.')));
+            } else {
+                for (const sink of sinks) {
+                    const isDefault = defSink && sink.get_id() === defSink.get_id();
+                    const sName = (sink.get_name() || '').toLowerCase();
+                    const iconName = sName.includes('headphone') || sName.includes('bluez')
+                        ? 'audio-headphones-symbolic'
+                        : 'audio-speakers-symbolic';
+                    const right = isDefault ? new St.Label({text: '✓', style_class: 'mac-panel-sub'}) : null;
+                    const row = mkRow(iconName, sink.get_description() || sink.get_name(), right, isDefault ? 'mac-chip-blue' : 'mac-chip-gray');
+                    const b = new St.Button({style_class: 'mac-panel-item', x_expand: true, child: row});
+                    b.connect('clicked', () => {
+                        try {
+                            mixer.set_default_sink(sink);
+                            syncMainTiles();
+                            populateSound(listOut, listIn);
+                        } catch (e) {
+                            warn(`set_default_sink failed: ${e}`);
+                        }
+                    });
+                    listOut.add_child(b);
+                }
+            }
+
+            const defSource = mixer.get_default_source();
+            const sources = mixer.get_sources() || [];
+            if (!sources.length) {
+                listIn.add_child(infoRow(tr('noDevices', 'No input devices.')));
+            } else {
+                for (const source of sources) {
+                    const isDefault = defSource && source.get_id() === defSource.get_id();
+                    const iconName = 'audio-input-microphone-symbolic';
+                    const right = isDefault ? new St.Label({text: '✓', style_class: 'mac-panel-sub'}) : null;
+                    const row = mkRow(iconName, source.get_description() || source.get_name(), right, isDefault ? 'mac-chip-purple' : 'mac-chip-gray');
+                    const b = new St.Button({style_class: 'mac-panel-item', x_expand: true, child: row});
+                    b.connect('clicked', () => {
+                        try {
+                            mixer.set_default_source(source);
+                            syncMainTiles();
+                            populateSound(listOut, listIn);
+                        } catch (e) {
+                            warn(`set_default_source failed: ${e}`);
+                        }
+                    });
+                    listIn.add_child(b);
+                }
+            }
+        } catch (e) {
+            warn(`populateSound failed: ${e}`);
+        }
+    }
+
     function skeletonSimple(title, extra) {
         detailCont.add_child(backRow());
         detailCont.add_child(sep());
@@ -1125,23 +1206,7 @@ export function crea(ext, h) {
             let list = null;
             if (kind === 'wifi') list = skeletonWifi();
             else if (kind === 'bluetooth') list = skeletonBluetooth();
-            else if (kind === 'sound') skeletonSimple(tr('sound', 'Sound'), () => {
-                detailCont.add_child(section(tr('output', 'Output Devices')));
-                // The speaker waves ripple when the output is toggled.
-                const spk = makeGlyph('speaker', 16, h, 'mac-panel-icon');
-                spk.set(true, false);
-                spk.pulse();
-                const out = mkSwitch(true, (on) => {
-                    spk.set(on, true);
-                    if (on) {
-                        spk.pulse();
-                        if (tiles.speaker) tiles.speaker.pulse();
-                    }
-                });
-                detailCont.add_child(switchRow('audio-volume-high-symbolic', 'mac-chip-purple', tr('output', 'Output'), out, spk));
-                detailCont.add_child(sep());
-                detailCont.add_child(settingsRow('gnome-control-center sound', 'Sound Settings…', 'mac-chip-purple'));
-            });
+            else if (kind === 'sound') skeletonSound();
             else if (kind === 'display') skeletonSimple(tr('display', 'Display'), () => {
                 const nightOn = !!(ext._colorSettings && ext._colorSettings.get_boolean('night-light-enabled'));
                 // The sun sets (and the moon rises) when night light is enabled.
