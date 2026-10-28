@@ -681,6 +681,11 @@ export default class MacControlCentre extends Extension {
 
         this._ids.push([this._qs.menu, this._qs.menu.connect('open-state-changed', (_m, open) => {
             if (open) {
+                this._applyTransparentContainer(true);
+                if (this._qs?.menu?._boxPointer?._border) {
+                    this._qs.menu._boxPointer._border.visible = false;
+                    this._qs.menu._boxPointer._border.opacity = 0;
+                }
                 // First the cascading entrance, then the sync: so the state
                 // "pop"s never overlap the opening animation.
                 this._startEntrance();
@@ -728,13 +733,47 @@ export default class MacControlCentre extends Extension {
         const menu = this._qs?.menu;
         if (!menu) return;
         const cls = 'mac-cc-quick-settings';
+        const transparentStyle = 'background: transparent !important; background-color: transparent !important; border: none !important; border-image: none !important; background-image: none !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important;';
 
         for (const actor of [menu.actor, menu.box, menu._boxPointer, menu._boxPointer?.bin]) {
             if (!actor) continue;
-            if (enable)
+            if (enable) {
                 actor.add_style_class_name(cls);
-            else
+                try { actor.set_style(transparentStyle); } catch (e) {}
+            } else {
                 actor.remove_style_class_name(cls);
+                try { actor.set_style(null); } catch (e) {}
+            }
+        }
+
+        if (menu.box) {
+            if (enable) {
+                menu.box.remove_style_class_name('popup-menu-content');
+                menu.box.remove_style_class_name('quick-settings');
+            } else {
+                menu.box.add_style_class_name('popup-menu-content');
+                menu.box.add_style_class_name('quick-settings');
+            }
+        }
+
+        if (menu._boxPointer) {
+            if (enable) {
+                menu._boxPointer.remove_style_class_name('popup-menu-boxpointer');
+                menu._boxPointer.remove_style_class_name('popup-menu');
+                menu._boxPointer.remove_style_class_name('panel-menu');
+                if (menu._boxPointer._border) {
+                    menu._boxPointer._border.visible = false;
+                    menu._boxPointer._border.opacity = 0;
+                }
+            } else {
+                menu._boxPointer.add_style_class_name('popup-menu-boxpointer');
+                menu._boxPointer.add_style_class_name('popup-menu');
+                menu._boxPointer.add_style_class_name('panel-menu');
+                if (menu._boxPointer._border) {
+                    menu._boxPointer._border.visible = true;
+                    menu._boxPointer._border.opacity = 255;
+                }
+            }
         }
     }
 
