@@ -90,6 +90,17 @@ function propSet(bus, name, path, iface, prop, variant) {
         });
 }
 
+function pget(dict, key, fallback) {
+    if (!dict) return fallback;
+    const v = dict[key];
+    if (v == null) return fallback;
+    try {
+        if (typeof v.deepUnpack === 'function') return v.deepUnpack();
+        if (typeof v.unpack === 'function') return v.unpack();
+    } catch (e) {}
+    return v;
+}
+
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_PATH = '/org/mpris/MediaPlayer2';
 const PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
@@ -1216,15 +1227,23 @@ export default class MacControlCentre extends Extension {
                 NONE, -1, null, (c, r) => {
                     try {
                         const objs = c.call_finish(r).deepUnpack()[0];
+                        const connectedNames = [];
                         for (const path of Object.keys(objs)) {
                             const dev = objs[path]?.['org.bluez.Device1'];
-                            if (dev && dev.Connected) {
-                                const name = dev.Alias || dev.Name || path.split('/').pop();
-                                if (name) {
-                                    this._bt._sub.text = String(name);
-                                    break;
+                            if (dev) {
+                                const isConnected = pget(dev, 'Connected', false);
+                                if (isConnected) {
+                                    const devName = pget(dev, 'Alias', null) || pget(dev, 'Name', null) || path.split('/').pop();
+                                    if (devName) connectedNames.push(String(devName));
                                 }
                             }
+                        }
+                        if (connectedNames.length === 1) {
+                            this._bt._sub.text = connectedNames[0];
+                        } else if (connectedNames.length > 1) {
+                            this._bt._sub.text = `${connectedNames[0]} (+${connectedNames.length - 1})`;
+                        } else {
+                            this._bt._sub.text = tr('on');
                         }
                     } catch (e) {}
                 });
