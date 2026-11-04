@@ -305,13 +305,17 @@ const ANIM_PATH = GLib.build_filenamev([
 const ANIM_DEFAULT = {
     enabled: true,
 
+    // The tiles' own cascade on open: set enter to false and the tiles simply
+    // sit there while the panel opens.
+    enter: true,
+
     // Open: the tiles arrive in a cascade when you open the panel.
     // The arrival has two phases: first they overshoot the final
     // size a little (enterOvershoot), then they settle -> "liquid" effect.
-    enterBase: 20,        // initial delay (ms)
-    enterStep: 20,        // delay between two consecutive tiles (ms)
-    enterDuration: 280,   // arrival duration (ms)
-    enterSettle: 150,     // final settle duration (ms)
+    enterBase: 0,         // initial delay (ms)
+    enterStep: 12,        // delay between two consecutive tiles (ms)
+    enterDuration: 180,   // arrival duration (ms)
+    enterSettle: 80,      // final settle duration (ms)
     enterScale: 0.90,     // starting scale (1 = fade only)
     enterRise: 8,         // how many px they rise from (0 = none)
     enterOvershoot: 1.02, // how much they overshoot before settling
@@ -341,6 +345,13 @@ const ANIM_DEFAULT = {
     sliderDown: 240,
 };
 
+const ANIM_PREVIOUS_DEFAULT = {
+    enterBase: 20,
+    enterStep: 20,
+    enterDuration: 280,
+    enterSettle: 150,
+};
+
 let _anim = {...ANIM_DEFAULT};
 
 // (Re)reads the parameters from the file. Called every time the panel opens.
@@ -349,13 +360,27 @@ function loadAnim() {
     try {
         const [, bytes] = GLib.file_get_contents(ANIM_PATH);
         const json = JSON.parse(new TextDecoder().decode(bytes));
+        let migrated = false;
         for (const k of Object.keys(ANIM_DEFAULT)) {
             // Only values of the same type are accepted: a typo cannot break anything.
-            if (typeof json[k] === typeof ANIM_DEFAULT[k])
-                _anim[k] = json[k];
+            if (typeof json[k] !== typeof ANIM_DEFAULT[k])
+                continue;
+            if (Object.prototype.hasOwnProperty.call(ANIM_PREVIOUS_DEFAULT, k) &&
+                json[k] === ANIM_PREVIOUS_DEFAULT[k]) {
+                json[k] = ANIM_DEFAULT[k];
+                migrated = true;
+            }
+            _anim[k] = json[k];
+        }
+        if (migrated) {
+            try {
+                GLib.file_set_contents(ANIM_PATH, `${JSON.stringify(json, null, 4)}\n`);
+            } catch (e) {
+                console.warn(`macos-cc: cannot migrate ${ANIM_PATH}: ${e}`);
+            }
         }
     } catch (e) {
-        // missing or malformed file: the defaults stay in place
+        // Missing or malformed file: the defaults stay in place.
     }
     return _anim;
 }
@@ -475,6 +500,37 @@ function pop(a) {
 }
 
 // Wide tile with an icon circle (toggle) and a text area (menu)
+/* ---------- the gliding slider ----------
+ * When the system reports a value (media keys, another app, the brightness
+ * daemon) the bar glides to it on a short ease out instead of teleporting —
+ * the macOS feel: the control keeps moving with you. While the user holds the
+ * handle, their hand owns the value, so a glide that starts mid-grip is
+ * cancelled. */
+const GLIDE_MS = 190;
+function glideTo(slider, to) {
+    if (Math.abs(to - slider.value) < 0.001)
+        return;
+    const end = Math.max(0, Math.min(1, to));
+    if (!animOn(slider) || slider._dragging) {
+        slider.value = end;
+        return;
+    }
+    if (slider._glideId) {
+        GLib.source_remove(slider._glideId);
+        slider._glideId = 0;
+    }
+    const from = slider.value;
+    const t0 = GLib.get_monotonic_time() / 1000;
+    slider._glideId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+        slider._glideId = 0;
+        const p = Math.min((GLib.get_monotonic_time() / 1000 - t0) / GLIDE_MS, 1);
+        slider.value = from + (end - from) * (1 - Math.pow(1 - p, 3));
+        if (p >= 1)
+            return GLib.SOURCE_REMOVE;
+        return GLib.SOURCE_CONTINUE;
+    });
+}
+
 function wideTile(iconName, title, subtitle, extraClass, onToggle, onMenu) {
     const btn = new St.BoxLayout({
         style_class: `mac-tile ${extraClass}`,
@@ -590,6 +646,12 @@ function sliderTile(title, lowIcon, highIcon, onTrail) {
     // separate actor: scaling it during the drag would also shift the value
     // mapping, so we do not do that.)
     slider.connect('drag-begin', () => {
+        // The user's hand owns the value: an in-flight glide cancels here.
+        if (slider._glideId) {
+            GLib.source_remove(slider._glideId);
+            slider._glideId = 0;
+        }
+        slider._dragging = true;
         if (!animOn(box))
             return;
         box.ease({
@@ -600,6 +662,7 @@ function sliderTile(title, lowIcon, highIcon, onTrail) {
         });
     });
     slider.connect('drag-end', () => {
+        slider._dragging = false;
         if (!_anim.enabled)
             return;
         box.ease({
@@ -660,6 +723,10 @@ export default class MacControlCentre extends Extension {
 
         this._applyTransparentContainer(true);
         this._buildPanel();
+        // Marks the built-in gliding sliders (fresh extension.js): pannelli.js
+        // looks for this marker, so its own glide hook stays off and the two
+        // never fight over the same bar.
+        this._hasGlide = true;
 
         // Removes the original Quick Settings content from the menu.
         // IMPORTANT: Liquid Glass keeps a private glass host actor inside this
@@ -813,7 +880,7 @@ export default class MacControlCentre extends Extension {
         const gen = ++this._openGen;
         const list = this._enterActors ?? [];
 
-        if (!_anim.enabled) {
+        if (!_anim.enabled || _anim.enter === false) {
             for (const a of list) {
                 if (!a)
                     continue;
@@ -1265,13 +1332,13 @@ export default class MacControlCentre extends Extension {
         const blMax = bl ? readInt(`${BL_DIR}/${bl}/max_brightness`) : null;
         const blCur = bl ? readInt(`${BL_DIR}/${bl}/brightness`) : null;
         if (bl && blMax && blCur !== null) {
-            this._display.slider.value = Math.min(1, blCur / blMax);
+            glideTo(this._display.slider, Math.min(1, blCur / blMax));
         } else {
             propGet(Gio.DBus.session, 'org.gnome.SettingsDaemon.Power', '/org/gnome/SettingsDaemon/Power',
                 'org.gnome.SettingsDaemon.Power.Screen', 'Brightness', b => {
                     this._building = true;
                     if (b !== null && b >= 0)
-                        this._display.slider.value = b / 100;
+                        glideTo(this._display.slider, b / 100);
                     this._building = false;
                 });
         }
@@ -1280,10 +1347,10 @@ export default class MacControlCentre extends Extension {
             this._mixer ??= Volume.getMixerControl();
             const sink = this._mixer.get_default_sink();
             if (sink)
-                this._sound.slider.value = Math.min(1, sink.volume / this._mixer.get_vol_max_norm());
+                glideTo(this._sound.slider, Math.min(1, sink.volume / this._mixer.get_vol_max_norm()));
             const source = this._mixer.get_default_source();
             if (source && this._mic)
-                this._mic.slider.value = Math.min(1, source.volume / this._mixer.get_vol_max_norm());
+                glideTo(this._mic.slider, Math.min(1, source.volume / this._mixer.get_vol_max_norm()));
         } catch (e) {
             console.warn(`macos-cc: mixer unavailable: ${e}`);
         }
