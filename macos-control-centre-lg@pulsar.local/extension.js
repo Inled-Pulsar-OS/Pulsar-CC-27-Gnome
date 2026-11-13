@@ -608,12 +608,38 @@ function circleButton(iconName, extraClass, onClick) {
     return asGlassCircle(btn);
 }
 
+function _updateWidgetIconColor(widget, on) {
+    if (!widget) return;
+    const findIcons = (actor) => {
+        const icons = [];
+        if (!actor) return icons;
+        if (actor instanceof St.Icon || (actor.constructor && actor.constructor.name === 'Icon')) {
+            icons.push(actor);
+        }
+        if (actor.get_children) {
+            for (const child of actor.get_children()) {
+                icons.push(...findIcons(child));
+            }
+        }
+        return icons;
+    };
+    const icons = findIcons(widget);
+    for (const ic of icons) {
+        if (on) {
+            ic.set_style('color: #000000 !important; -st-icon-foreground-color: #000000 !important;');
+        } else {
+            ic.set_style(null);
+        }
+    }
+}
+
 function setOn(widget, on, popTarget = widget) {
     const was = widget.has_style_pseudo_class('checked');
     if (on)
         widget.add_style_pseudo_class('checked');
     else
         widget.remove_style_pseudo_class('checked');
+    _updateWidgetIconColor(widget, on);
     // Only when the state REALLY changed: no pop on every sync. popTarget is
     // the whole pill on the wide tiles (the bubble is only its indicator).
     if (was === on)
@@ -764,12 +790,27 @@ export default class MacControlCentre extends Extension {
                     this._qs.menu._boxPointer._border.visible = false;
                     this._qs.menu._boxPointer._border.opacity = 0;
                 }
+                if (this._qs?.menu?.actor) {
+                    this._qs.menu.actor.show();
+                    this._qs.menu.actor.reactive = true;
+                }
+                if (this._panel) {
+                    this._panel.show();
+                    this._panel.reactive = true;
+                }
                 // First the cascading entrance, then the sync: so the state
                 // "pop"s never overlap the opening animation.
                 this._startEntrance();
                 this._refresh();
             } else {
                 this._pan?.close();
+                if (this._panel) {
+                    this._panel.reactive = false;
+                }
+                if (this._qs?.menu?.actor) {
+                    this._qs.menu.actor.reactive = false;
+                    this._qs.menu.actor.hide();
+                }
             }
         })]);
         // Refreshes play/pause and the title as soon as the player changes state
