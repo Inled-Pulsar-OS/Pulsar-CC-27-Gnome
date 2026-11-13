@@ -628,13 +628,16 @@ function _updateWidgetIconColor(widget, on) {
         if (on) {
             ic.set_style('color: #000000 !important; -st-icon-foreground-color: #000000 !important;');
         } else {
-            ic.set_style(null);
+            ic.set_style('color: #ffffff !important; -st-icon-foreground-color: #ffffff !important;');
         }
     }
 }
 
 function setOn(widget, on, popTarget = widget) {
     const was = widget.has_style_pseudo_class('checked');
+    if (was === on && widget._macIconInitialized)
+        return;
+    widget._macIconInitialized = true;
     if (on)
         widget.add_style_pseudo_class('checked');
     else
