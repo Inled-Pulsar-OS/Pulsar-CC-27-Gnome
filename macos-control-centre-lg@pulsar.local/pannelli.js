@@ -5,6 +5,29 @@ import GLib from 'gi://GLib';
 import Pango from 'gi://Pango';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as Animation from 'resource:///org/gnome/shell/ui/animation.js';
+
+function createSpinner(size = 16) {
+    try {
+        if (Animation && Animation.Spinner) {
+            const sp = new Animation.Spinner(size);
+            sp.x_align = Clutter.ActorAlign.END;
+            sp.y_align = Clutter.ActorAlign.CENTER;
+            return sp;
+        }
+    } catch (e) {}
+    const icon = new St.Icon({
+        icon_name: 'process-working-symbolic',
+        icon_size: size,
+        style_class: 'mac-spinner',
+        x_align: Clutter.ActorAlign.END,
+        y_align: Clutter.ActorAlign.CENTER,
+    });
+    icon.play = () => { icon.visible = true; };
+    icon.stop = () => { icon.visible = false; };
+    icon.visible = false;
+    return icon;
+}
 
 const NONE = Gio.DBusCallFlags.NONE;
 const EASE = Clutter.AnimationMode.EASE_OUT_QUAD;
@@ -466,6 +489,14 @@ export function crea(ext, h) {
     let currentKind = null;
     let closing = false;
     let anchor = null;     // actor that triggered opening the detail (used to pivot from it)
+    let detailTimers = [];
+
+    function clearDetailTimers() {
+        for (const t of detailTimers) {
+            try { GLib.source_remove(t); } catch (e) {}
+        }
+        detailTimers = [];
+    }
 
     function tr(k, fb) { try { return (h.tr && h.tr(k)) || fb; } catch (e) { return fb; } }
     function launch(cmd) { try { h.launch(cmd); } catch (e) { fail(e, 'launch ' + cmd); } }
@@ -771,6 +802,9 @@ export function crea(ext, h) {
     function skeletonWifi() {
         let quiet = true;
         const list = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, name: 'wifi-list'});
+        const wifiSpinner = createSpinner(16);
+        list._spinner = wifiSpinner;
+
         const refreshList = () => {
             if (currentKind !== 'wifi' || !detailRoot || !detailRoot.visible) return;
             populateWifi(list, gen, false).catch(() => {});
@@ -791,7 +825,12 @@ export function crea(ext, h) {
             .then((on) => { sw.checked = !!on; }).catch(() => {}).then(() => { quiet = false; });
         detailCont.add_child(backRow());
         detailCont.add_child(headerRow('Wi-Fi', sw));
-        detailCont.add_child(section(tr('networks', 'Networks')));
+
+        const secRow = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'mac-panel-section-row'});
+        secRow.add_child(new St.Label({text: tr('networks', 'Networks'), style_class: 'mac-panel-section', x_expand: true}));
+        secRow.add_child(wifiSpinner);
+        detailCont.add_child(secRow);
+
         detailCont.add_child(scrollList(list));
         detailCont.add_child(sep());
         detailCont.add_child(settingsRow('gnome-control-center wifi', 'Wi-Fi Settings…', 'mac-chip-blue'));
@@ -803,6 +842,9 @@ export function crea(ext, h) {
         // a property of the Adapter1 object, so resolve the adapter path first.
         let quiet = true;
         const list = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, x_expand: true, name: 'bt-list'});
+        const btSpinner = createSpinner(16);
+        list._spinner = btSpinner;
+
         const refreshList = () => {
             if (currentKind !== 'bluetooth' || !detailRoot || !detailRoot.visible) return;
             populateBluetooth(list, gen, false).catch(() => {});
@@ -819,11 +861,13 @@ export function crea(ext, h) {
                 // the Bluetooth pill stops claiming the old state.
                 syncMainTiles();
                 if (on) {
+                    try { btSpinner.play(); } catch (e) { btSpinner.visible = true; }
                     startBtDiscovery();
                     [1500, 3500, 7000].forEach(t =>
                         GLib.timeout_add(GLib.PRIORITY_DEFAULT, t, () => { refreshList(); return GLib.SOURCE_REMOVE; }));
                 } else {
                     stopBtDiscovery();
+                    try { btSpinner.stop(); } catch (e) { btSpinner.visible = false; }
                     refreshList();
                 }
             }).catch(e => warn(`BlueZ Powered set failed: ${e && (e.message || e)}`));
@@ -836,7 +880,12 @@ export function crea(ext, h) {
         }).catch(() => {}).then(() => { quiet = false; });
         detailCont.add_child(backRow());
         detailCont.add_child(headerRow('Bluetooth', sw));
-        detailCont.add_child(section(tr('devices', 'Devices')));
+
+        const secRow = new St.BoxLayout({x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'mac-panel-section-row'});
+        secRow.add_child(new St.Label({text: tr('devices', 'Devices'), style_class: 'mac-panel-section', x_expand: true}));
+        secRow.add_child(btSpinner);
+        detailCont.add_child(secRow);
+
         detailCont.add_child(scrollList(list));
         detailCont.add_child(sep());
         detailCont.add_child(settingsRow('gnome-control-center bluetooth', 'Bluetooth Settings…', 'mac-chip-blue'));
@@ -947,6 +996,14 @@ export function crea(ext, h) {
             }
             if (gen !== myGen) return;
             if (!wifiDev) { clearChildren(list); list.add_child(infoRow(tr('noWifiDev', 'No Wi-Fi device found.'))); return; }
+
+            // Trigger active Wi-Fi scan on initial open
+            if (animate) {
+                dbusCall(Gio.DBus.system, NM, wifiDev,
+                    'org.freedesktop.NetworkManager.Device.Wireless', 'RequestScan',
+                    new GLib.Variant('(a{sv})', [{}])).catch(() => {});
+            }
+
             const w = (await dbusCall(Gio.DBus.system, NM, wifiDev, 'org.freedesktop.DBus.Properties', 'GetAll',
                 new GLib.Variant('(s)', ['org.freedesktop.NetworkManager.Device.Wireless'])))?.deepUnpack()[0] || {};
             const aps = pget(w, 'AccessPoints', []) || [];
@@ -962,8 +1019,12 @@ export function crea(ext, h) {
             rows.sort((x, y) => (y.strength - x.strength) || x.ssid.localeCompare(y.ssid));
             if (gen !== myGen) return;
             if (!rows.length) { clearChildren(list); list.add_child(infoRow(tr('noNetworks', 'No networks found.'))); return; }
-            // Clear right before repopulating (synchronously) so a refresh never
-            // leaves the list momentarily empty/flickering.
+
+            // Avoid flickering if network list signature is unchanged
+            const sig = rows.map(r => `${r.path}:${r.ssid}:${r.strength}:${r.path === active}`).join(';');
+            if (!animate && list._lastSig === sig) return;
+            list._lastSig = sig;
+
             clearChildren(list);
             let ri = 0;   // position in the list, for the arrival stagger
             for (const r of rows) {
@@ -1000,11 +1061,20 @@ export function crea(ext, h) {
                 const d = objs[path];
                 if (d && d['org.bluez.Device1']) {
                     const p = d['org.bluez.Device1'];
+                    const isPaired = !!pget(p, 'Paired', false);
+                    const isConnected = !!pget(p, 'Connected', false);
+                    const rawName = pget(p, 'Name', null);
+                    const rawAlias = pget(p, 'Alias', null);
+
+                    // Skip anonymous BLE MAC beacons without an advertised name unless paired/connected
+                    if (!isPaired && !isConnected && !rawName)
+                        continue;
+
                     devices.push({
                         path,
-                        name: pget(p, 'Alias', null) || pget(p, 'Name', null) || path.split('/').pop(),
-                        connected: !!pget(p, 'Connected', false),
-                        paired: !!pget(p, 'Paired', false),
+                        name: rawAlias || rawName || path.split('/').pop(),
+                        connected: isConnected,
+                        paired: isPaired,
                         icon: pget(p, 'Icon', 'bluetooth-symbolic'),
                     });
                 }
@@ -1013,8 +1083,11 @@ export function crea(ext, h) {
             devices.sort((x, y) => (y.connected - x.connected) || (y.paired - x.paired) || x.name.localeCompare(y.name));
             if (gen !== myGen) return;
             if (!devices.length) { clearChildren(list); list.add_child(infoRow(tr('noBt', 'No Bluetooth devices.'))); return; }
-            // Clear right before repopulating (synchronously) to avoid a flash of
-            // an empty list while a refresh is in flight.
+
+            const sig = devices.map(d => `${d.path}:${d.name}:${d.connected}:${d.paired}`).join(';');
+            if (!animate && list._lastSig === sig) return;
+            list._lastSig = sig;
+
             clearChildren(list);
             let ri = 0;   // position in the list, for the arrival stagger
             for (const dev of devices) {
@@ -1254,19 +1327,45 @@ export function crea(ext, h) {
             GLib.timeout_add(GLib.PRIORITY_DEFAULT, 140, () => {
                 if (gen !== myGen) return GLib.SOURCE_REMOVE;
                 if (kind === 'wifi') {
+                    try { list?._spinner?.play(); } catch (e) { if (list?._spinner) list._spinner.visible = true; }
                     populateWifi(list, myGen, true).catch(e => fail(e, 'wifi'));
-                } else if (kind === 'bluetooth') {
-                    populateBluetooth(list, myGen, true).catch(e => fail(e, 'bluetooth'));
-                    // Devices trickle in while the adapter scans, so re-read the
-                    // list a few times instead of waiting a single long beat —
-                    // otherwise the panel sat on "No Bluetooth devices".
-                    for (const t of [1500, 3000, 6000, 10000]) {
-                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, t, () => {
-                            if (gen === myGen && currentKind === 'bluetooth' && detailRoot && detailRoot.visible)
-                                populateBluetooth(list, myGen, false).catch(() => {});
+
+                    // Active periodic reload so Wi-Fi list always reflects real-time status
+                    const refreshTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2500, () => {
+                        if (gen !== myGen || currentKind !== 'wifi' || !detailRoot || !detailRoot.visible)
                             return GLib.SOURCE_REMOVE;
-                        });
-                    }
+                        populateWifi(list, myGen, false).catch(() => {});
+                        return GLib.SOURCE_CONTINUE;
+                    });
+                    detailTimers.push(refreshTimer);
+
+                    // Stop search spinner after initial scan completes
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3500, () => {
+                        if (gen === myGen && currentKind === 'wifi' && list?._spinner) {
+                            try { list._spinner.stop(); } catch (e) { list._spinner.visible = false; }
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
+                } else if (kind === 'bluetooth') {
+                    try { list?._spinner?.play(); } catch (e) { if (list?._spinner) list._spinner.visible = true; }
+                    populateBluetooth(list, myGen, true).catch(e => fail(e, 'bluetooth'));
+
+                    // Active periodic reload so Bluetooth discovered and connected devices update in real-time
+                    const refreshTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 2000, () => {
+                        if (gen !== myGen || currentKind !== 'bluetooth' || !detailRoot || !detailRoot.visible)
+                            return GLib.SOURCE_REMOVE;
+                        populateBluetooth(list, myGen, false).catch(() => {});
+                        return GLib.SOURCE_CONTINUE;
+                    });
+                    detailTimers.push(refreshTimer);
+
+                    // Settle search spinner after 7 seconds of discovery
+                    GLib.timeout_add(GLib.PRIORITY_DEFAULT, 7000, () => {
+                        if (gen === myGen && currentKind === 'bluetooth' && list?._spinner) {
+                            try { list._spinner.stop(); } catch (e) { list._spinner.visible = false; }
+                        }
+                        return GLib.SOURCE_REMOVE;
+                    });
                 }
                 return GLib.SOURCE_REMOVE;
             });
@@ -1280,6 +1379,7 @@ export function crea(ext, h) {
 
     function back() {
         gen++;
+        clearDetailTimers();
         currentKind = null;
         stopBtDiscovery();
         if (!detailRoot) {
@@ -1338,6 +1438,7 @@ export function crea(ext, h) {
     function close() {
         closing = true;
         gen++;
+        clearDetailTimers();
         currentKind = null;
         stopBtDiscovery();
         if (detailRoot) { try { detailRoot.hide(); detailRoot.opacity = 0; detailRoot.scale_x = 1; detailRoot.scale_y = 1; } catch (e) {} }
@@ -1349,6 +1450,7 @@ export function crea(ext, h) {
 
     function destroy() {
         gen++;
+        clearDetailTimers();
         if (menuId) {
             try { ext._qs.menu.disconnect(menuId); } catch (e) {}
             menuId = 0;
