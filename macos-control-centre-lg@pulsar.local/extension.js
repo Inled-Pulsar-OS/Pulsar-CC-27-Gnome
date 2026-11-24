@@ -6,6 +6,8 @@ import St from 'gi://St';
 import Soup from 'gi://Soup?version=3.0';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
+
+import {TogglePillTile, MediaSquareTile, CircleTile, SliderBar} from './controlCenter.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Slider} from 'resource:///org/gnome/shell/ui/slider.js';
 import * as Volume from 'resource:///org/gnome/shell/ui/status/volume.js';
@@ -20,7 +22,14 @@ function symbol(name) {
 
 // --- Laptop backlight: reads /sys and writes through logind
 const BL_DIR = '/sys/class/backlight';
+// The directory is scanned once: the panel used to enumerate /sys/class/backlight
+// on every refresh, i.e. in the same frame in which it started to open.
+let _backlight;
+let _backlightScanned = false;
 function findBacklight() {
+    if (_backlightScanned)
+        return _backlight;
+    _backlightScanned = true;
     try {
         const en = Gio.File.new_for_path(BL_DIR).enumerate_children(
             'standard::name', Gio.FileQueryInfoFlags.NONE, null);
@@ -29,10 +38,11 @@ function findBacklight() {
         while ((info = en.next_file(null)))
             names.push(info.get_name());
         en.close(null);
-        return names[0] ?? null;
+        _backlight = names[0] ?? null;
     } catch (e) {
-        return null;
+        _backlight = null;
     }
+    return _backlight;
 }
 function readInt(path) {
     try {
@@ -90,17 +100,6 @@ function propSet(bus, name, path, iface, prop, variant) {
         });
 }
 
-function pget(dict, key, fallback) {
-    if (!dict) return fallback;
-    const v = dict[key];
-    if (v == null) return fallback;
-    try {
-        if (typeof v.deepUnpack === 'function') return v.deepUnpack();
-        if (typeof v.unpack === 'function') return v.unpack();
-    } catch (e) {}
-    return v;
-}
-
 const MPRIS_PREFIX = 'org.mpris.MediaPlayer2.';
 const MPRIS_PATH = '/org/mpris/MediaPlayer2';
 const PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
@@ -124,18 +123,16 @@ function icon(name, cls = '') {
         style_class: `mac-icon ${cls}`,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
-        icon_size: 22,
     };
     if (name && typeof name === 'object' && name instanceof Gio.Icon)
         props.gicon = name;
     else if (typeof name === 'string' && name.startsWith('mc:'))
         props.gicon = symbol(name.slice(3));
-    else if (typeof name === 'string' && name.length > 0) {
-        if (name.includes('/') && GLib.file_test(name, GLib.FileTest.EXISTS))
-            props.gicon = Gio.icon_new_for_string(name);
-        else
-            props.icon_name = name;
-    } else
+    else if (typeof name === 'string' && name.includes('/') && GLib.file_test(name, GLib.FileTest.EXISTS))
+        props.gicon = Gio.icon_new_for_string(name);
+    else if (typeof name === 'string' && name.length > 0)
+        props.icon_name = name;
+    else
         props.icon_name = 'application-x-addon-symbolic';
     const ic = new St.Icon(props);
     ic.set_style('-st-icon-style: symbolic;');
@@ -192,17 +189,19 @@ const LG_OVERRIDE = 'background-color: transparent !important;';
  * No .po/.mo files to compile: the package stays a plain "install.sh". */
 const STRINGS = {
     // key:  night       dnd                 display     sound     notPlaying              on        off
-    en: {night: 'Night Shift', dnd: 'Do Not Disturb', display: 'Display', sound: 'Sound', mic: 'Microphone', output: 'Output', input: 'Input',
-         notPlaying: 'Not Playing', on: 'On', off: 'Off'},
-    it: {night: 'Luce notturna', dnd: 'Non disturbare', display: 'Schermo', sound: 'Audio', mic: 'Microfono', output: 'Uscita', input: 'Ingresso',
+    en: {night: 'Night Shift', dnd: 'Do Not Disturb', display: 'Display', sound: 'Sound',
+         notPlaying: 'Not Playing', on: 'On', off: 'Off', editControls: 'Edit Controls',
+         focus: 'Focus'},
+    it: {night: 'Luce notturna', dnd: 'Non disturbare', display: 'Schermo', sound: 'Audio',
          notPlaying: 'Non in riproduzione', on: 'Attivo', off: 'Non attivo',
+         editControls: 'Modifica controlli', focus: 'Focus',
          onF: 'Attiva', offF: 'Non attiva'},          // "Luce notturna" is feminine
-    fr: {night: 'Lumière nocturne', dnd: 'Ne pas déranger', display: 'Écran', sound: 'Son', mic: 'Microphone', output: 'Sortie', input: 'Entrée',
+    fr: {night: 'Lumière nocturne', dnd: 'Ne pas déranger', display: 'Écran', sound: 'Son',
          notPlaying: 'Aucune lecture', on: 'Activé', off: 'Désactivé',
          onF: 'Activée', offF: 'Désactivée'},
-    de: {night: 'Nachtlicht', dnd: 'Nicht stören', display: 'Bildschirm', sound: 'Ton', mic: 'Mikrofon', output: 'Ausgabe', input: 'Eingabe',
+    de: {night: 'Nachtlicht', dnd: 'Nicht stören', display: 'Bildschirm', sound: 'Ton',
          notPlaying: 'Keine Wiedergabe', on: 'Ein', off: 'Aus'},
-    es: {night: 'Modo nocturno', dnd: 'No molestar', display: 'Pantalla', sound: 'Sonido', mic: 'Micrófono', output: 'Salida', input: 'Entrada',
+    es: {night: 'Modo nocturno', dnd: 'No molestar', display: 'Pantalla', sound: 'Sonido',
          notPlaying: 'Sin reproducción', on: 'Activado', off: 'Desactivado'},
     pt: {night: 'Modo noturno', dnd: 'Não incomodar', display: 'Ecrã', sound: 'Som',
          notPlaying: 'Nada em reprodução', on: 'Ativado', off: 'Desativado'},
@@ -542,117 +541,60 @@ function glideTo(slider, to) {
 }
 
 function wideTile(iconName, title, subtitle, extraClass, onToggle, onMenu) {
-    const btn = new St.BoxLayout({
-        style_class: `mac-tile ${extraClass}`,
-        reactive: true,
-        can_focus: true,
-    });
-    const row = new St.BoxLayout({y_align: Clutter.ActorAlign.CENTER, style_class: 'mac-tile-row', x_expand: true});
-    
-    // The circle is now an independent button (to switch it on/off)
-    const bubble = new St.Button({
-        style_class: 'mac-bubble',
-        y_align: Clutter.ActorAlign.CENTER,
-        can_focus: true,
-        reactive: true,
-        child: icon(iconName),
-    });
-    // Compresses as soon as you press it (bubble or text), not on release.
-    bindPress(bubble, btn);
-    // On activation the WHOLE pill springs: bubble and pill move as one piece.
-    bubble.connect('clicked', () => {
-        btn._macPopSyncPending = true;   // the following sync is the echo
-        pop(btn);
+    // The pill is TogglePillTile: a Cairo squircle of 192x89 with the option
+    // circle (46px) at cx=43 and the 46px-tall text block starting at x=76.
+    const tile = asGlassToggle(new TogglePillTile({
+        title,
+        subtitle,
+        extraClass,
+        icon: icon(iconName),
+    }));
+
+    // Pressing the circle switches the tile on/off; pressing the text opens the
+    // detail sheet. Both compress the whole pill, not just the part you hit.
+    bindPress(tile.bubble, tile);
+    tile.bubble.connect('clicked', () => {
+        tile._macPopSyncPending = true;   // the following sync is the echo
+        pop(tile);
         onToggle?.();
     });
+    bindPress(tile.textBtn, tile);
+    tile.textBtn.connect('clicked', () => onMenu?.(tile));
 
-    // The text part opens the settings menu
-    const textBtn = new St.Button({
-        y_align: Clutter.ActorAlign.CENTER,
-        x_expand: true,
-        can_focus: true,
-        reactive: true,
-        style_class: 'mac-tile-text-btn'
-    });
-    const texts = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, y_align: Clutter.ActorAlign.CENTER, x_expand: true});
-    const t = new St.Label({text: title, style_class: 'mac-title', reactive: false, can_focus: false});
-    const s = new St.Label({text: subtitle, style_class: 'mac-sub', reactive: false, can_focus: false});
-    for (const l of [t, s])
-        l.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-    texts.add_child(t);
-    texts.add_child(s);
-    textBtn.set_child(texts);
-    bindPress(textBtn, btn);
-    textBtn.connect('clicked', () => {
-        // Hand the whole pill to the callback so pannelli.js can expand the
-        // detail sheet out of the tile that was actually clicked.
-        onMenu?.(btn);
-    });
-
-    row.add_child(bubble);
-    row.add_child(textBtn);
-    btn.add_child(row);
-    
-    btn._sub = s;
-    btn._bubble = bubble;
-    pivot(btn);
-    return asGlassToggle(btn);
+    tile._sub = tile.subLabel;
+    tile._bubble = tile.bubble;
+    tile._textBtn = tile.textBtn;
+    pivot(tile);
+    return tile;
 }
 
 function circleButton(iconName, extraClass, onClick) {
-    const btn = new St.Button({
-        style_class: `mac-circle ${extraClass}`,
-        can_focus: true,
-        reactive: true,
-        child: icon(iconName),
-    });
-    bindPress(btn);
-    // The activation spring starts right at the release instant, instead of
-    // waiting for the D-Bus state sync to come back.
-    btn.connect('clicked', () => {
-        btn._macPopSyncPending = true;   // the following sync is the echo
-        pop(btn);
+    const tile = asGlassCircle(new CircleTile({icon: icon(iconName), extraClass}));
+    bindPress(tile.button, tile);
+    // The activation spring starts at the release instant, instead of waiting
+    // for the D-Bus state sync to come back.
+    tile.button.connect('clicked', () => {
+        tile._macPopSyncPending = true;
+        pop(tile);
         onClick?.();
     });
-    pivot(btn);
-    return asGlassCircle(btn);
-}
-
-function _updateWidgetIconColor(widget, on) {
-    if (!widget) return;
-    const findIcons = (actor) => {
-        const icons = [];
-        if (!actor) return icons;
-        if (actor instanceof St.Icon || (actor.constructor && actor.constructor.name === 'Icon')) {
-            icons.push(actor);
-        }
-        if (actor.get_children) {
-            for (const child of actor.get_children()) {
-                icons.push(...findIcons(child));
-            }
-        }
-        return icons;
-    };
-    const icons = findIcons(widget);
-    for (const ic of icons) {
-        if (on) {
-            ic.set_style('color: #000000 !important; -st-icon-foreground-color: #000000 !important; -st-icon-style: symbolic;');
-        } else {
-            ic.set_style('color: #ffffff !important; -st-icon-foreground-color: #ffffff !important; -st-icon-style: symbolic;');
-        }
-    }
+    pivot(tile);
+    return tile;
 }
 
 function setOn(widget, on, popTarget = widget) {
     const was = widget.has_style_pseudo_class('checked');
-    if (was === on && widget._macIconInitialized)
-        return;
-    widget._macIconInitialized = true;
     if (on)
         widget.add_style_pseudo_class('checked');
     else
         widget.remove_style_pseudo_class('checked');
-    _updateWidgetIconColor(widget, on);
+    // The Cairo outline paints its own "on" state.
+    widget.setOn?.(on);
+    // Wide tiles pass the whole pill as popTarget: their bubble is a plain
+    // St.Button, so its PodShape (tile.shape) is what must learn the state.
+    // Without this the bubble disc stayed grey on an enabled Wi-Fi.
+    if (popTarget !== widget)
+        popTarget.shape?.setOn?.(on);
     // Only when the state REALLY changed: no pop on every sync. popTarget is
     // the whole pill on the wide tiles (the bubble is only its indicator).
     if (was === on)
@@ -673,27 +615,38 @@ function launch(cmd) {
 }
 
 function sliderTile(title, lowIcon, highIcon, onTrail) {
-    const box = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-slider-tile'});
-    pivot(box);
-    box.add_child(new St.Label({text: title, style_class: 'mac-title'}));
-    const row = new St.BoxLayout({y_align: Clutter.ActorAlign.CENTER, style_class: 'mac-slider-row'});
     const slider = new Slider(0.5);
     slider.x_expand = true;
     slider.y_align = Clutter.ActorAlign.CENTER;
-    // While you drag, the tile "lifts" a little and settles back on
-    // release. (The slider handle is drawn in Cairo by BarLevel and is not a
-    // separate actor: scaling it during the drag would also shift the value
-    // mapping, so we do not do that.)
+    const trail = onTrail ? new St.Button({
+        style_class: 'mac-airplay',
+        can_focus: true,
+        reactive: true,
+        child: icon('mc:airplay', 'mac-small'),
+    }) : null;
+    const bar = new SliderBar({
+        title,
+        lowIcon: icon(lowIcon, 'mac-small'),
+        highIcon: icon(highIcon, 'mac-small'),
+        slider,
+        trail,
+    });
+
+    if (onTrail) {
+        bindPress(trail);
+        trail.connect('clicked', () => onTrail());
+    }
+
+    // While you drag, the whole bar lifts a little and settles back on release.
     slider.connect('drag-begin', () => {
-        // The user's hand owns the value: an in-flight glide cancels here.
         if (slider._glideId) {
             GLib.source_remove(slider._glideId);
             slider._glideId = 0;
         }
         slider._dragging = true;
-        if (!animOn(box))
+        if (!animOn(bar))
             return;
-        box.ease({
+        bar.ease({
             scale_x: _anim.sliderLift,
             scale_y: _anim.sliderLift,
             duration: _anim.sliderUp,
@@ -704,122 +657,16 @@ function sliderTile(title, lowIcon, highIcon, onTrail) {
         slider._dragging = false;
         if (!_anim.enabled)
             return;
-        box.ease({
+        bar.ease({
             scale_x: 1,
             scale_y: 1,
             duration: _anim.sliderDown,
             mode: Clutter.AnimationMode.EASE_OUT_BACK,
         });
     });
-    row.add_child(icon(lowIcon, 'mac-small'));
-    row.add_child(slider);
-    row.add_child(icon(highIcon, 'mac-small'));
-    if (onTrail) {
-        const trail = new St.Button({
-            style_class: 'mac-airplay',
-            can_focus: true,
-            reactive: true,
-            child: icon('mc:airplay', 'mac-small'),
-        });
-        bindPress(trail);
-        trail.connect('clicked', () => onTrail());
-        row.add_child(trail);
-    }
-    box.add_child(row);
-    box.slider = slider;
-    return asGlassSlider(box);
-}
 
-function findItemTitle(item) {
-    if (!item) return '';
-    let t = item.title || item.label || '';
-    if (typeof t !== 'string' && t?.text) t = t.text;
-    if (t) return String(t);
-    if (item._title?.text) return String(item._title.text);
-    if (typeof item.get_property === 'function') {
-        try {
-            const p = item.get_property('title');
-            if (p) return String(p);
-        } catch (e) {}
-    }
-    const findLabel = (actor, depth = 0) => {
-        if (!actor || depth > 5) return '';
-        if (actor instanceof St.Label && actor.text) {
-            return actor.text;
-        }
-        if (actor.get_children) {
-            for (const child of actor.get_children()) {
-                const res = findLabel(child, depth + 1);
-                if (res) return res;
-            }
-        }
-        return '';
-    };
-    return findLabel(item);
-}
-
-function findItemSubtitle(item) {
-    if (!item) return '';
-    let s = item.subtitle || '';
-    if (typeof s !== 'string' && s?.text) s = s.text;
-    if (s) return String(s);
-    if (item._subtitle?.text) return String(item._subtitle.text);
-    if (typeof item.get_property === 'function') {
-        try {
-            const p = item.get_property('subtitle');
-            if (p) return String(p);
-        } catch (e) {}
-    }
-    return '';
-}
-
-function findItemIcon(item) {
-    if (!item) return null;
-    if (item.gicon) return item.gicon;
-    if (item.icon_name) return item.icon_name;
-    if (item.iconName) return item.iconName;
-    if (typeof item.get_property === 'function') {
-        try {
-            const g = item.get_property('gicon');
-            if (g) return g;
-        } catch (e) {}
-        try {
-            const n = item.get_property('icon-name');
-            if (n) return n;
-        } catch (e) {}
-    }
-    if (item._icon) {
-        const ic = item._icon.gicon || item._icon.icon_name;
-        if (ic) return ic;
-    }
-    const findInActor = (actor, depth = 0) => {
-        if (!actor || depth > 6) return null;
-        if (actor instanceof St.Icon) {
-            const name = actor.icon_name || '';
-            if (name !== 'go-next-symbolic' && name !== 'pan-end-symbolic') {
-                const src = actor.gicon || actor.icon_name;
-                if (src) return src;
-            }
-        }
-        if (actor.get_children) {
-            for (const child of actor.get_children()) {
-                const res = findInActor(child, depth + 1);
-                if (res) return res;
-            }
-        }
-        return null;
-    };
-    const found = findInActor(item);
-    if (found) return found;
-
-    // Direct fallback for nosleep extension icon
-    const title = findItemTitle(item).toLowerCase();
-    if (title.includes('stay awake') || title.includes('nosleep')) {
-        const nosleepIconPath = `${GLib.get_home_dir()}/.local/share/gnome-shell/extensions/nosleep@ilyasturki.com/icons/nosleep-symbolic.svg`;
-        if (GLib.file_test(nosleepIconPath, GLib.FileTest.EXISTS))
-            return Gio.icon_new_for_string(nosleepIconPath);
-    }
-    return null;
+    bar.slider = slider;
+    return asGlassSlider(bar);
 }
 
 /* ---------- extension ---------- */
@@ -852,7 +699,6 @@ export default class MacControlCentre extends Extension {
             this._colorSettings = null;
         }
 
-        this._applyTransparentContainer(true);
         this._buildPanel();
         // Marks the built-in gliding sliders (fresh extension.js): pannelli.js
         // looks for this marker, so its own glide hook stays off and the two
@@ -890,47 +736,20 @@ export default class MacControlCentre extends Extension {
 
         this._ids.push([this._qs.menu, this._qs.menu.connect('open-state-changed', (_m, open) => {
             if (open) {
-                this._applyTransparentContainer(true);
-                if (this._qs?.menu?._boxPointer?._border) {
-                    this._qs.menu._boxPointer._border.visible = false;
-                    this._qs.menu._boxPointer._border.opacity = 0;
-                }
-                if (this._qs?.menu?.actor) {
-                    this._qs.menu.actor.show();
-                    this._qs.menu.actor.reactive = true;
-                }
-                if (this._panel) {
-                    this._panel.show();
-                    this._panel.reactive = true;
-                }
-                // First the cascading entrance, then the sync: so the state
-                // "pop"s never overlap the opening animation.
+                // First the cascading entrance, on its own.
                 this._startEntrance();
-                this._refresh();
-                if (this._openRefreshId) {
-                    GLib.source_remove(this._openRefreshId);
-                }
-                this._openRefreshId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
-                    if (this._qs?.menu?.isOpen) {
-                        this._refresh();
-                        return GLib.SOURCE_CONTINUE;
-                    }
-                    this._openRefreshId = 0;
-                    return GLib.SOURCE_REMOVE;
+                // The state sync (D-Bus, /sys, the mixer, MPRIS) used to run in
+                // the very frame in which the panel started to open, and it is
+                // what made the first 100-200 ms of the animation stutter.
+                // A few frames later it is invisible: the tiles are already
+                // arriving and the values land well before the cascade ends.
+                later(140, () => {
+                    if (!this._panel || !this._qs?.menu?.isOpen)
+                        return;
+                    this._refresh();
                 });
             } else {
-                if (this._openRefreshId) {
-                    GLib.source_remove(this._openRefreshId);
-                    this._openRefreshId = 0;
-                }
                 this._pan?.close();
-                if (this._panel) {
-                    this._panel.reactive = false;
-                }
-                if (this._qs?.menu?.actor) {
-                    this._qs.menu.actor.reactive = false;
-                    this._qs.menu.actor.hide();
-                }
             }
         })]);
         // Refreshes play/pause and the title as soon as the player changes state
@@ -942,45 +761,14 @@ export default class MacControlCentre extends Extension {
                 'NameOwnerChanged', null, null, Gio.DBusSignalFlags.NONE,
                 () => later(200, () => this._refreshMedia())),
         ];
-
-        // Active real-time listeners for NetworkManager and BlueZ state changes
-        this._systemSubs = [
-            Gio.DBus.system.signal_subscribe('org.freedesktop.NetworkManager',
-                'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                null, null, Gio.DBusSignalFlags.NONE,
-                () => {
-                    if (this._qs?.menu?.isOpen)
-                        this._refresh();
-                }),
-            Gio.DBus.system.signal_subscribe('org.bluez',
-                'org.freedesktop.DBus.Properties', 'PropertiesChanged',
-                null, null, Gio.DBusSignalFlags.NONE,
-                () => {
-                    if (this._qs?.menu?.isOpen)
-                        this._refresh();
-                }),
-        ];
-
-        // Setup third-party extension pill integration
-        this._setupExtensionPills();
-
         this._refresh();
     }
 
     disable() {
         this._openGen = (this._openGen ?? 0) + 1;   // stops the pending timers
-        if (this._openRefreshId) {
-            GLib.source_remove(this._openRefreshId);
-            this._openRefreshId = 0;
-        }
         for (const id of this._subs ?? [])
             Gio.DBus.session.signal_unsubscribe(id);
         this._subs = [];
-        for (const id of this._systemSubs ?? []) {
-            try { Gio.DBus.system.signal_unsubscribe(id); } catch (e) {}
-        }
-        this._systemSubs = [];
-        this._teardownExtensionPills();
         for (const [obj, id] of this._ids ?? [])
             obj.disconnect(id);
         this._ids = [];
@@ -993,58 +781,9 @@ export default class MacControlCentre extends Extension {
         } catch (e) { /* ignore */ }
         for (const [child, i] of this._removed ?? [])
             this._qs.menu.box.insert_child_at_index(child, i);
-        this._applyTransparentContainer(false);
         this._removed = [];
         this._ifaceSettings = this._notifSettings = this._colorSettings = null;
         this._mixer = null;
-    }
-
-    _applyTransparentContainer(enable) {
-        const menu = this._qs?.menu;
-        if (!menu) return;
-        const cls = 'mac-cc-quick-settings';
-        const transparentStyle = 'background: transparent !important; background-color: transparent !important; border: none !important; border-image: none !important; background-image: none !important; box-shadow: none !important; margin: 0 !important; padding: 0 !important;';
-
-        for (const actor of [menu.actor, menu.box, menu._boxPointer, menu._boxPointer?.bin]) {
-            if (!actor) continue;
-            if (enable) {
-                actor.add_style_class_name(cls);
-                try { actor.set_style(transparentStyle); } catch (e) {}
-            } else {
-                actor.remove_style_class_name(cls);
-                try { actor.set_style(null); } catch (e) {}
-            }
-        }
-
-        if (menu.box) {
-            if (enable) {
-                menu.box.remove_style_class_name('popup-menu-content');
-                menu.box.remove_style_class_name('quick-settings');
-            } else {
-                menu.box.add_style_class_name('popup-menu-content');
-                menu.box.add_style_class_name('quick-settings');
-            }
-        }
-
-        if (menu._boxPointer) {
-            if (enable) {
-                menu._boxPointer.remove_style_class_name('popup-menu-boxpointer');
-                menu._boxPointer.remove_style_class_name('popup-menu');
-                menu._boxPointer.remove_style_class_name('panel-menu');
-                if (menu._boxPointer._border) {
-                    menu._boxPointer._border.visible = false;
-                    menu._boxPointer._border.opacity = 0;
-                }
-            } else {
-                menu._boxPointer.add_style_class_name('popup-menu-boxpointer');
-                menu._boxPointer.add_style_class_name('popup-menu');
-                menu._boxPointer.add_style_class_name('panel-menu');
-                if (menu._boxPointer._border) {
-                    menu._boxPointer._border.visible = true;
-                    menu._boxPointer._border.opacity = 255;
-                }
-            }
-        }
     }
 
     /* Cascading entrance of the tiles when the panel opens.
@@ -1064,13 +803,6 @@ export default class MacControlCentre extends Extension {
         }[kind];
         this._qs.menu.close();
         if (fallback) launch(fallback);
-        return false;
-    }
-
-    _openExtMenu(item, anchor) {
-        this._extMenuTarget = item;
-        if (this._pan?.open('ext_menu', anchor))
-            return true;
         return false;
     }
 
@@ -1149,15 +881,13 @@ export default class MacControlCentre extends Extension {
         const panel = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-cc'});
         this._panel = panel;
 
-        /* Left / right columns */
-        const top = new St.BoxLayout({style_class: 'mac-row', y_align: Clutter.ActorAlign.START});
-        const left = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-col'});
-        const right = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            style_class: 'mac-col',
-            y_align: Clutter.ActorAlign.START,
-            y_expand: false,
-        });
+        /* Top block: Wi-Fi + Bluetooth on the left (2 pills = 147, exactly the
+           height of the player), the player on the right. The Night Shift pill
+           used to be stacked here too, which made this block 68px taller than
+           the player and broke every proportion below it. */
+        const top = new St.BoxLayout({style_class: 'mac-row'});
+        const left = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-col mac-left-col'});
+        const right = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-col mac-right-col'});
 
         this._wifi = wideTile('mc:wifi', 'Wi-Fi', '', '', 
             () => this._toggleWifi(), 
@@ -1167,27 +897,24 @@ export default class MacControlCentre extends Extension {
             () => this._toggleBt(), 
             (anchor) => this._openPanel('bluetooth', anchor)
         );
-        this._extPillsBox = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            style_class: 'mac-col',
-            visible: false,
-        });
+        left.add_child(this._wifi);
+        left.add_child(this._bt);
+
+        this._mediaTile = this._buildMedia();
+        right.add_child(this._mediaTile);
+
+        top.add_child(left);
+        top.add_child(right);
+        panel.add_child(top);
+
+        /* Row: Night Shift pill on the left, Stage + Mirror circles on the right. */
+        const row3 = new St.BoxLayout({style_class: 'mac-row'});
         this._night = wideTile('mc:sun-horizon', tr('night'), '', '', 
             () => this._toggleNight(), 
             (anchor) => this._openPanel('display', anchor)
         );
-        left.add_child(this._wifi);
-        left.add_child(this._bt);
-        left.add_child(this._extPillsBox);
-        left.add_child(this._night);
-
-        this._mediaTile = this._buildMedia();
-        right.add_child(this._mediaTile);
-        const pair = new St.BoxLayout({
-            style_class: 'mac-row',
-            y_align: Clutter.ActorAlign.START,
-            y_expand: false,
-        });
+        row3.add_child(this._night);
+        const pair = new St.BoxLayout({style_class: 'mac-row mac-row-circles'});
         this._stage = circleButton('mc:stage', '', () => {
             this._qs.menu.close();
             Main.overview.toggle();
@@ -1198,15 +925,12 @@ export default class MacControlCentre extends Extension {
             launch('gnome-control-center display');
         });
         pair.add_child(this._mirror);
-        right.add_child(pair);
-
-        top.add_child(left);
-        top.add_child(right);
-        panel.add_child(top);
+        row3.add_child(pair);
+        panel.add_child(row3);
 
         /* Row: dark mode, screenshot, Do Not Disturb */
         const row4 = new St.BoxLayout({style_class: 'mac-row'});
-        const circles = new St.BoxLayout({style_class: 'mac-row'});
+        const circles = new St.BoxLayout({style_class: 'mac-row mac-row-circles'});
         
         // Fixed mac-blue removed, :checked is used instead
         this._dark = circleButton('mc:contrast', '', () => this._toggleDark());
@@ -1219,7 +943,7 @@ export default class MacControlCentre extends Extension {
             });
         });
         circles.add_child(this._shot);
-        this._dnd = wideTile('mc:moon', tr('dnd'), '', '', 
+        this._dnd = wideTile('mc:moon', tr('focus'), '', 'mac-focus', 
             () => this._toggleDnd(), 
             (anchor) => this._openPanel('focus', anchor)
         );
@@ -1229,15 +953,30 @@ export default class MacControlCentre extends Extension {
 
         /* Sliders */
         this._display = sliderTile(tr('display'), 'mc:sun-min', 'mc:sun-max');
-        this._sound = sliderTile(tr('sound'), 'mc:speaker-low', 'mc:speaker-high', (btn) => {
-            this._openPanel('sound', btn || this._sound);
-        });
-        this._mic = sliderTile(tr('mic'), 'audio-input-microphone-low-symbolic', 'audio-input-microphone-high-symbolic', (btn) => {
-            this._openPanel('sound', btn || this._mic);
+        this._sound = sliderTile(tr('sound'), 'mc:speaker-low', 'mc:speaker-high', () => {
+            this._qs.menu.close();
+            launch('gnome-control-center sound');
         });
         panel.add_child(this._display);
         panel.add_child(this._sound);
-        panel.add_child(this._mic);
+
+        /* "Edit Controls", like the reference's bottom capsule. */
+        const editRow = new St.BoxLayout({
+            style_class: 'mac-edit-row',
+            x_align: Clutter.ActorAlign.CENTER,
+        });
+        const editBtn = new St.Button({
+            style_class: 'mac-edit-controls',
+            can_focus: true,
+            reactive: true,
+            child: new St.Label({text: tr('editControls'), style_class: 'mac-edit-label'}),
+        });
+        editBtn.connect('clicked', () => {
+            this._qs.menu.close();
+            launch('gnome-control-center');
+        });
+        editRow.add_child(editBtn);
+        panel.add_child(editRow);
 
         this._display.slider.connect('notify::value', () => {
             if (this._building)
@@ -1258,38 +997,21 @@ export default class MacControlCentre extends Extension {
             if (this._building)
                 return;
             try {
-                this._mixer ??= Volume.getMixerControl();
                 const sink = this._mixer.get_default_sink();
-                if (sink) {
-                    sink.volume = this._sound.slider.value * this._mixer.get_vol_max_norm();
-                    sink.push_volume();
-                }
+                sink.volume = this._sound.slider.value * this._mixer.get_vol_max_norm();
+                sink.push_volume();
             } catch (e) {
                 console.warn(`macos-cc: volume: ${e}`);
-            }
-        });
-        this._mic.slider.connect('notify::value', () => {
-            if (this._building)
-                return;
-            try {
-                this._mixer ??= Volume.getMixerControl();
-                const source = this._mixer.get_default_source();
-                if (source) {
-                    source.volume = this._mic.slider.value * this._mixer.get_vol_max_norm();
-                    source.push_volume();
-                }
-            } catch (e) {
-                console.warn(`macos-cc: mic volume: ${e}`);
             }
         });
 
         // Order in which the widgets enter when you open the panel: left to
         // right, top to bottom (like MacOS does).
         this._enterActors = [
-            this._wifi, this._bt, this._night,
-            this._mediaTile, this._stage, this._mirror,
+            this._wifi, this._bt, this._mediaTile,
+            this._night, this._stage, this._mirror,
             this._dark, this._shot, this._dnd,
-            this._display, this._sound, this._mic,
+            this._display, this._sound, editBtn,
         ];
         for (const a of this._enterActors)
             pivot(a);
@@ -1298,45 +1020,13 @@ export default class MacControlCentre extends Extension {
     }
 
     _buildMedia() {
-        const tile = asGlassMedia(new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            style_class: 'mac-media',
-            x_expand: true,
-            y_expand: false,
-            y_align: Clutter.ActorAlign.START,
-            height: 146,
-        }));
-        tile.set_height(146);
+        const tile = asGlassMedia(new MediaSquareTile());
+        this._art = tile.art;
+        this._mediaTitle = tile.titleLabel;
+        this._mediaSub = tile.subLabel;
+        this._mediaTitle.text = tr('notPlaying');
 
-        // Album art in the top-left corner.
-        // It already carries LG_OVERRIDE in its style (see the comment above):
-        // Liquid Glass then ignores it entirely and the album art is untouched.
-        this._art = new St.Widget({
-            style_class: 'mac-media-art',
-            style: LG_OVERRIDE,
-            x_align: Clutter.ActorAlign.START,
-            y_align: Clutter.ActorAlign.START,
-        });
-
-        this._mediaTitle = new St.Label({
-            text: tr('notPlaying'),
-            style_class: 'mac-title mac-media-title',
-            x_align: Clutter.ActorAlign.START,
-        });
-        this._mediaTitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-
-        // The buttons are centred with two elastic spacers on each side: the
-        // box takes the full width and the two spacers split the leftover
-        // space in equal parts. (x_align alone was not enough: the tile layout
-        // expanded the box anyway and the buttons ended up shifted right.)
-        const controls = new St.BoxLayout({
-            style_class: 'mac-media-controls',
-            x_expand: true,
-            y_expand: false,
-            y_align: Clutter.ActorAlign.END,
-        });
-        const spacer = () => new St.Widget({ x_expand: true });
-
+        // The three buttons go into the tile's centred, bottom-anchored row.
         const mk = (name, method) => {
             const b = new St.Button({
                 style_class: 'mac-media-button',
@@ -1357,16 +1047,11 @@ export default class MacControlCentre extends Extension {
         };
 
         this._playBtn = mk('play', 'PlayPause');
-        pivot(this._playBtn.child);   // the glyph rotates/scales from its own centre
-        controls.add_child(spacer());
-        controls.add_child(mk('rewind', 'Previous'));
-        controls.add_child(this._playBtn);
-        controls.add_child(mk('forward', 'Next'));
-        controls.add_child(spacer());
+        pivot(this._playBtn.child);
+        tile.controls.add_child(mk('rewind', 'Previous'));
+        tile.controls.add_child(this._playBtn);
+        tile.controls.add_child(mk('forward', 'Next'));
 
-        tile.add_child(this._art);
-        tile.add_child(this._mediaTitle);
-        tile.add_child(controls);
         pivot(tile);
         return tile;
     }
@@ -1383,11 +1068,11 @@ export default class MacControlCentre extends Extension {
         const apply = path => {
             if (this._artUrl !== url || !this._panel)
                 return;
-            // background-size = exact size of the box (46x46, see CSS): this way
+            // background-size = exact size of the box (38x38, see CSS): this way
             // the image fills the box and its border-radius (11px) can crop it
             // with rounded corners (if it were any smaller the inner corners of
             // the image would stay square).
-            this._art.set_style(`${LG_OVERRIDE} background-image: url("file://${path}"); background-size: 46px 46px;`);
+            this._art.set_style(`${LG_OVERRIDE} background-image: url("file://${path}"); background-size: 38px 38px;`);
         };
         if (url.startsWith('file://')) {
             apply(decodeURIComponent(url.slice(7)));
@@ -1471,67 +1156,28 @@ export default class MacControlCentre extends Extension {
 
         propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager',
             'org.freedesktop.NetworkManager', 'WirelessEnabled', on => {
-                const wifiOn = !!on;
-                setOn(this._wifi._bubble, wifiOn, this._wifi);
-                if (!wifiOn) {
+                setOn(this._wifi._bubble, !!on, this._wifi); // Uses _bubble instead of the whole tile!
+                // The reference shows the network name, not a plain "On".
+                if (!on) {
                     this._wifi._sub.text = tr('off');
                     return;
                 }
                 this._wifi._sub.text = tr('on');
-                // Check active Wi-Fi connection / SSID
-                propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager',
-                    'org.freedesktop.NetworkManager', 'PrimaryConnection', primary => {
-                        if (primary && primary !== '/') {
-                            propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', primary,
-                                'org.freedesktop.NetworkManager.Connection.Active', 'Type', type => {
-                                    if (type === '802-11-wireless') {
-                                        propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', primary,
-                                            'org.freedesktop.NetworkManager.Connection.Active', 'Id', id => {
-                                                if (id) this._wifi._sub.text = String(id);
-                                            });
-                                        return;
-                                    }
-                                    this._checkWifiActiveConnections();
-                                });
-                        } else {
-                            this._checkWifiActiveConnections();
-                        }
+                propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager',
+                    '/org/freedesktop/NetworkManager', 'org.freedesktop.NetworkManager',
+                    'PrimaryConnection', primary => {
+                        if (!primary || !this._wifi)
+                            return;
+                        propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', primary,
+                            'org.freedesktop.NetworkManager.Connection.Active', 'Id', id => {
+                                if (id)
+                                    this._wifi._sub.text = id;
+                            });
                     });
             });
-
         propGet(Gio.DBus.system, 'org.bluez', '/org/bluez/hci0', 'org.bluez.Adapter1', 'Powered', on => {
-            const btOn = !!on;
-            setOn(this._bt._bubble, btOn, this._bt);
-            if (!btOn) {
-                this._bt._sub.text = tr('off');
-                return;
-            }
-            this._bt._sub.text = tr('on');
-            Gio.DBus.system.call('org.bluez', '/', 'org.freedesktop.DBus.ObjectManager',
-                'GetManagedObjects', null, GLib.VariantType.new('(a{oa{sa{sv}}})'),
-                NONE, -1, null, (c, r) => {
-                    try {
-                        const objs = c.call_finish(r).deepUnpack()[0];
-                        const connectedNames = [];
-                        for (const path of Object.keys(objs)) {
-                            const dev = objs[path]?.['org.bluez.Device1'];
-                            if (dev) {
-                                const isConnected = pget(dev, 'Connected', false);
-                                if (isConnected) {
-                                    const devName = pget(dev, 'Alias', null) || pget(dev, 'Name', null) || path.split('/').pop();
-                                    if (devName) connectedNames.push(String(devName));
-                                }
-                            }
-                        }
-                        if (connectedNames.length === 1) {
-                            this._bt._sub.text = connectedNames[0];
-                        } else if (connectedNames.length > 1) {
-                            this._bt._sub.text = `${connectedNames[0]} (+${connectedNames.length - 1})`;
-                        } else {
-                            this._bt._sub.text = tr('on');
-                        }
-                    } catch (e) {}
-                });
+            setOn(this._bt._bubble, !!on, this._bt);
+            this._bt._sub.text = on ? tr('on') : tr('off');
         });
 
         const night = this._colorSettings?.get_boolean('night-light-enabled') ?? false;
@@ -1566,33 +1212,12 @@ export default class MacControlCentre extends Extension {
             const sink = this._mixer.get_default_sink();
             if (sink)
                 glideTo(this._sound.slider, Math.min(1, sink.volume / this._mixer.get_vol_max_norm()));
-            const source = this._mixer.get_default_source();
-            if (source && this._mic)
-                glideTo(this._mic.slider, Math.min(1, source.volume / this._mixer.get_vol_max_norm()));
         } catch (e) {
             console.warn(`macos-cc: mixer unavailable: ${e}`);
         }
 
         this._building = false;
         this._refreshMedia();
-    }
-
-    _checkWifiActiveConnections() {
-        propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', '/org/freedesktop/NetworkManager',
-            'org.freedesktop.NetworkManager', 'ActiveConnections', conns => {
-                if (!conns || !conns.length) return;
-                for (const p of conns) {
-                    propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', p,
-                        'org.freedesktop.NetworkManager.Connection.Active', 'Type', type => {
-                            if (type === '802-11-wireless') {
-                                propGet(Gio.DBus.system, 'org.freedesktop.NetworkManager', p,
-                                    'org.freedesktop.NetworkManager.Connection.Active', 'Id', id => {
-                                        if (id) this._wifi._sub.text = String(id);
-                                    });
-                            }
-                        });
-                }
-            });
     }
 
     // Changes the play/pause glyph. With animations enabled it uses a
@@ -1634,6 +1259,7 @@ export default class MacControlCentre extends Extension {
                 return;
             if (!name) {
                 this._mediaTitle.text = tr('notPlaying');
+                this._mediaSub.text = '';
                 this._setPlayGlyph('play');
                 this._setArt(null);
                 return;
@@ -1656,353 +1282,17 @@ export default class MacControlCentre extends Extension {
                 try {
                     const m = md.deepUnpack();
                     this._mediaTitle.text = m['xesam:title']?.deepUnpack() || tr('notPlaying');
+                    const rawArtist = m['xesam:artist']?.deepUnpack?.();
+                    const artist = Array.isArray(rawArtist) ? rawArtist.join(', ') : (rawArtist || '');
+                    const album = m['xesam:album']?.deepUnpack?.() || '';
+                    this._mediaSub.text = artist || album;
                     this._setArt(m['mpris:artUrl']?.deepUnpack() ?? null);
                 } catch (e) {
                     this._mediaTitle.text = tr('notPlaying');
+                    this._mediaSub.text = '';
                     this._setArt(null);
                 }
             });
         });
-    }
-
-    _collectBuiltinItems() {
-        this._builtinItems = new Set();
-        const props = [
-            '_system', '_volumeOutput', '_volumeInput', '_brightness',
-            '_camera', '_remoteAccess', '_thunderbolt', '_location',
-            '_network', '_bluetooth', '_powerProfiles', '_nightLight',
-            '_darkMode', '_doNotDisturb', '_backlight', '_rfkill',
-            '_autoRotate', '_unsafeMode', '_backgroundApps'
-        ];
-        for (const prop of props) {
-            const ind = this._qs?.[prop];
-            if (ind && Array.isArray(ind.quickSettingsItems)) {
-                for (const it of ind.quickSettingsItems) {
-                    if (it) this._builtinItems.add(it);
-                }
-            }
-        }
-    }
-
-    _isBuiltinItem(item) {
-        if (!item || !(item instanceof Clutter.Actor))
-            return true;
-        if (this._builtinItems && this._builtinItems.has(item))
-            return true;
-        const cname = item.constructor?.name || '';
-        if (cname === 'Actor' && !item.hasMenu && !item.toggle_mode && !item.title && !item.label)
-            return true;
-        return false;
-    }
-
-    _setupExtensionPills() {
-        this._collectBuiltinItems();
-        this._extPillsMap = new Map();
-
-        if (this._qs?.menu) {
-            const origAddItem = this._qs.menu.addItem.bind(this._qs.menu);
-            const origInsertItemBefore = this._qs.menu.insertItemBefore.bind(this._qs.menu);
-            this._origAddItem = origAddItem;
-            this._origInsertItemBefore = origInsertItemBefore;
-
-            this._qs.menu.addItem = (item, colSpan = 1) => {
-                origAddItem(item, colSpan);
-                this._handleExtItemCandidate(item);
-            };
-
-            this._qs.menu.insertItemBefore = (item, sibling, colSpan = 1) => {
-                origInsertItemBefore(item, sibling, colSpan);
-                this._handleExtItemCandidate(item);
-            };
-
-            if (this._qs.menu._grid) {
-                this._gridChildAddedId = this._qs.menu._grid.connect('child-added', (_c, child) => {
-                    this._handleExtItemCandidate(child);
-                });
-                this._gridChildRemovedId = this._qs.menu._grid.connect('child-removed', (_c, child) => {
-                    this._handleExtItemRemoved(child);
-                });
-
-                const children = this._qs.menu._grid.get_children();
-                for (const child of children) {
-                    this._handleExtItemCandidate(child);
-                }
-            }
-        }
-    }
-
-    _teardownExtensionPills() {
-        if (this._origAddItem && this._qs?.menu) {
-            this._qs.menu.addItem = this._origAddItem;
-            this._origAddItem = null;
-        }
-        if (this._origInsertItemBefore && this._qs?.menu) {
-            this._qs.menu.insertItemBefore = this._origInsertItemBefore;
-            this._origInsertItemBefore = null;
-        }
-        if (this._gridChildAddedId && this._qs?.menu?._grid) {
-            try { this._qs.menu._grid.disconnect(this._gridChildAddedId); } catch (e) {}
-            this._gridChildAddedId = 0;
-        }
-        if (this._gridChildRemovedId && this._qs?.menu?._grid) {
-            try { this._qs.menu._grid.disconnect(this._gridChildRemovedId); } catch (e) {}
-            this._gridChildRemovedId = 0;
-        }
-        if (this._extPillsMap) {
-            for (const [item, pill] of this._extPillsMap.entries()) {
-                if (Array.isArray(pill._itemSignals)) {
-                    for (const sid of pill._itemSignals) {
-                        try { item.disconnect(sid); } catch (e) {}
-                    }
-                }
-                try { pill.destroy(); } catch (e) {}
-            }
-            this._extPillsMap.clear();
-        }
-        if (this._extPillsBox) {
-            this._extPillsBox.destroy_all_children();
-            this._extPillsBox.visible = false;
-        }
-    }
-
-    _handleExtItemCandidate(item) {
-        if (!item || this._isBuiltinItem(item))
-            return;
-        if (this._extPillsMap && this._extPillsMap.has(item))
-            return;
-
-        const titleRaw = findItemTitle(item);
-        const titleStr = (titleRaw || '').trim().toLowerCase();
-        // Skip secondary toggle of nosleep so only a single primary pill is created
-        if (titleStr.includes('keep screen on') || titleStr.includes('pantalla encendida')) {
-            this._nosleepScreenItem = item;
-            return;
-        }
-
-        // Filter out items without a valid title or named "extension" / "extensiones"
-        if (!titleStr || titleStr === 'extension' || titleStr === 'extensiones')
-            return;
-
-        const pill = this._wrapExtensionToggle(item);
-        if (!pill)
-            return;
-
-        this._extPillsMap.set(item, pill);
-        if (this._extPillsBox) {
-            this._extPillsBox.add_child(pill);
-            this._extPillsBox.visible = true;
-        }
-    }
-
-    _handleExtItemRemoved(item) {
-        if (this._nosleepScreenItem === item) {
-            this._nosleepScreenItem = null;
-            return;
-        }
-        if (!item || !this._extPillsMap || !this._extPillsMap.has(item))
-            return;
-        const pill = this._extPillsMap.get(item);
-        this._extPillsMap.delete(item);
-
-        if (pill) {
-            if (Array.isArray(pill._itemSignals)) {
-                for (const sid of pill._itemSignals) {
-                    try { item.disconnect(sid); } catch (e) {}
-                }
-            }
-            if (this._extPillsBox && pill.get_parent() === this._extPillsBox) {
-                this._extPillsBox.remove_child(pill);
-                pill.destroy();
-            }
-        }
-
-        if (this._extPillsBox) {
-            this._extPillsBox.visible = this._extPillsBox.get_n_children() > 0;
-        }
-    }
-
-    _wrapExtensionToggle(item) {
-        let initialTitle = (findItemTitle(item) || '').trim();
-        if (!initialTitle || initialTitle.toLowerCase() === 'extension' || initialTitle.toLowerCase() === 'extensiones')
-            return null;
-        let initialSub = findItemSubtitle(item);
-        let iconSource = findItemIcon(item);
-
-        const pill = new St.BoxLayout({
-            style_class: 'mac-tile',
-            reactive: true,
-            can_focus: true,
-        });
-        asGlassToggle(pill);
-
-        const row = new St.BoxLayout({
-            y_align: Clutter.ActorAlign.CENTER,
-            style_class: 'mac-tile-row',
-            x_expand: true,
-        });
-
-        const bubble = new St.Button({
-            style_class: 'mac-bubble',
-            y_align: Clutter.ActorAlign.CENTER,
-            can_focus: true,
-            reactive: true,
-            child: icon(iconSource || 'application-x-addon-symbolic'),
-        });
-        bindPress(bubble, pill);
-
-        const textBtn = new St.Button({
-            y_align: Clutter.ActorAlign.CENTER,
-            x_expand: true,
-            can_focus: true,
-            reactive: true,
-            style_class: 'mac-tile-text-btn',
-        });
-        const texts = new St.BoxLayout({
-            orientation: Clutter.Orientation.VERTICAL,
-            y_align: Clutter.ActorAlign.CENTER,
-            x_expand: true,
-        });
-        const t = new St.Label({
-            text: String(initialTitle),
-            style_class: 'mac-title',
-            reactive: false,
-            can_focus: false,
-        });
-        const s = new St.Label({
-            text: String(initialSub),
-            style_class: 'mac-sub',
-            reactive: false,
-            can_focus: false,
-            visible: Boolean(initialSub),
-        });
-        for (const l of [t, s])
-            l.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        texts.add_child(t);
-        texts.add_child(s);
-        textBtn.set_child(texts);
-        bindPress(textBtn, pill);
-
-        row.add_child(bubble);
-        row.add_child(textBtn);
-
-        const hasMenu = Boolean(item.hasMenu || item.menu);
-        let chevron = null;
-        if (hasMenu) {
-            chevron = new St.Button({
-                style_class: 'mac-tile-chevron-btn',
-                y_align: Clutter.ActorAlign.CENTER,
-                can_focus: true,
-                reactive: true,
-                child: new St.Icon({
-                    icon_name: 'go-next-symbolic',
-                    icon_size: 14,
-                    style_class: 'mac-tile-chevron',
-                }),
-            });
-            bindPress(chevron, pill);
-            row.add_child(chevron);
-        }
-
-        pill.add_child(row);
-
-        pill._bubble = bubble;
-        pill._title = t;
-        pill._sub = s;
-        pill._targetItem = item;
-        pivot(pill);
-
-        const triggerAction = () => {
-            pill._macPopSyncPending = true;
-            pop(pill);
-            try {
-                if (typeof item.emit === 'function') {
-                    item.emit('clicked', Clutter.BUTTON_PRIMARY || 1);
-                    return;
-                }
-            } catch (e) {}
-            try {
-                if (typeof item.fake_release === 'function') {
-                    item.fake_release();
-                    return;
-                }
-            } catch (e) {}
-            try {
-                if (item.toggle_mode !== undefined && item.toggle_mode)
-                    item.checked = !item.checked;
-            } catch (e) {}
-        };
-
-        bubble.connect('clicked', () => triggerAction());
-
-        if (hasMenu) {
-            textBtn.connect('clicked', () => {
-                this._openExtMenu(item, pill);
-            });
-            if (chevron) {
-                chevron.connect('clicked', () => {
-                    this._openExtMenu(item, pill);
-                });
-            }
-        } else {
-            textBtn.connect('clicked', () => {
-                triggerAction();
-            });
-        }
-
-        const syncFromItem = () => {
-            const isChecked = Boolean(item.checked);
-            setOn(bubble, isChecked, pill);
-
-            const curTitle = findItemTitle(item);
-            if (curTitle && t.text !== curTitle)
-                t.text = String(curTitle);
-
-            const curSub = findItemSubtitle(item);
-            if (curSub) {
-                s.text = String(curSub);
-                s.visible = true;
-            } else {
-                s.text = '';
-                s.visible = false;
-            }
-
-            const curIcon = findItemIcon(item);
-            if (curIcon) {
-                const currentIconChild = bubble.get_child();
-                const needsUpdate = !currentIconChild || 
-                    (curIcon instanceof Gio.Icon && currentIconChild.gicon !== curIcon) ||
-                    (typeof curIcon === 'string' && currentIconChild.icon_name !== curIcon);
-                if (needsUpdate) {
-                    bubble.set_child(icon(curIcon));
-                }
-                _updateWidgetIconColor(bubble, isChecked);
-            }
-
-            pill.visible = item.visible !== false;
-        };
-
-        syncFromItem();
-
-        const signals = [];
-        const watchProps = ['checked', 'title', 'subtitle', 'icon-name', 'gicon', 'visible', 'menu-enabled'];
-        for (const prop of watchProps) {
-            try {
-                const sid = item.connect(`notify::${prop}`, () => syncFromItem());
-                signals.push(sid);
-            } catch (e) {}
-        }
-        if (item.menu) {
-            try {
-                const sid = item.menu.connect('open-state-changed', (_m, isOpen) => {
-                    if (isOpen && !this._pan?._isOpen) {
-                        this._openExtMenu(item, pill);
-                    }
-                });
-                signals.push(sid);
-            } catch (e) {}
-        }
-        pill._itemSignals = signals;
-
-        return pill;
     }
 }
