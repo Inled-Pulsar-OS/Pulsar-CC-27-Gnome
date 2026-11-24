@@ -1315,6 +1315,85 @@ export function crea(ext, h) {
                 detailCont.add_child(sep());
                 detailCont.add_child(settingsRow('gnome-control-center notifications', 'Notifications Settings…', 'mac-chip-purple'));
             });
+            else if (kind === 'ext_menu') {
+                const target = ext?._extMenuTarget;
+                let extTitle = target?.title || target?.label || '';
+                if (typeof extTitle !== 'string' && extTitle?.text) extTitle = extTitle.text;
+                if (!extTitle && target?._title?.text) extTitle = target._title.text;
+                if (!extTitle) extTitle = 'Extension';
+
+                const hasSwitch = target && target.checked !== undefined;
+                const sw = hasSwitch ? mkSwitch(Boolean(target.checked), (on) => {
+                    try {
+                        if (target.toggle_mode !== undefined && target.toggle_mode)
+                            target.checked = on;
+                        target.emit('clicked', Clutter.BUTTON_PRIMARY || 1);
+                    } catch (e) {
+                        try { target.fake_release(); } catch (e2) {}
+                    }
+                    syncMainTiles();
+                }) : null;
+
+                detailCont.add_child(backRow());
+                detailCont.add_child(sep());
+                detailCont.add_child(headerRow(extTitle, sw));
+                detailCont.add_child(sep());
+
+                if (target && target.menu) {
+                    const menuItems = target.menu._getMenuItems ? target.menu._getMenuItems() : [];
+                    for (const mi of menuItems) {
+                        if (!mi || mi.actor?.visible === false || mi.visible === false)
+                            continue;
+                        if (mi.constructor?.name === 'PopupSeparatorMenuItem') {
+                            detailCont.add_child(sep());
+                            continue;
+                        }
+                        let labelText = mi.label?.text || mi.text || '';
+                        if (!labelText) {
+                            try {
+                                const l = mi.actor?.get_children?.().find(c => c instanceof St.Label);
+                                if (l?.text) labelText = l.text;
+                            } catch (e) {}
+                        }
+                        if (!labelText) continue;
+
+                        let rightWidget = null;
+                        if (mi.state !== undefined && mi.state || mi.checked) {
+                            rightWidget = new St.Label({text: '✓', style_class: 'mac-panel-sub'});
+                        }
+                        const row = mkRow(null, labelText, rightWidget, 'mac-chip-gray');
+                        const b = new St.Button({style_class: 'mac-panel-item', x_expand: true, child: row});
+                        b.connect('clicked', () => {
+                            try {
+                                if (typeof mi.activate === 'function') {
+                                    mi.activate(Clutter.get_current_event());
+                                } else {
+                                    mi.emit('activate');
+                                }
+                            } catch (e) {
+                                warn(`ext menu item activate error: ${e}`);
+                            }
+                            back();
+                        });
+                        detailCont.add_child(b);
+                    }
+                }
+
+                if (ext?._nosleepScreenItem) {
+                    detailCont.add_child(sep());
+                    const screenItem = ext._nosleepScreenItem;
+                    const screenSw = mkSwitch(Boolean(screenItem.checked), (on) => {
+                        try {
+                            if (screenItem.toggle_mode !== undefined && screenItem.toggle_mode)
+                                screenItem.checked = on;
+                            screenItem.emit('clicked', Clutter.BUTTON_PRIMARY || 1);
+                        } catch (e) {
+                            try { screenItem.fake_release(); } catch (e2) {}
+                        }
+                    });
+                    detailCont.add_child(switchRow('video-display-symbolic', 'mac-chip-blue', 'Keep Screen On', screenSw));
+                }
+            }
             else { resetMainInstant(); return false; }
 
             // Kick the data off a beat *after* the stretch starts, instead of when

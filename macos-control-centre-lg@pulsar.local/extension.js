@@ -124,16 +124,22 @@ function icon(name, cls = '') {
         style_class: `mac-icon ${cls}`,
         x_align: Clutter.ActorAlign.CENTER,
         y_align: Clutter.ActorAlign.CENTER,
+        icon_size: 22,
     };
     if (name && typeof name === 'object' && name instanceof Gio.Icon)
         props.gicon = name;
     else if (typeof name === 'string' && name.startsWith('mc:'))
         props.gicon = symbol(name.slice(3));
-    else if (typeof name === 'string' && name.length > 0)
-        props.icon_name = name;
-    else
+    else if (typeof name === 'string' && name.length > 0) {
+        if (name.includes('/') && GLib.file_test(name, GLib.FileTest.EXISTS))
+            props.gicon = Gio.icon_new_for_string(name);
+        else
+            props.icon_name = name;
+    } else
         props.icon_name = 'application-x-addon-symbolic';
-    return new St.Icon(props);
+    const ic = new St.Icon(props);
+    ic.set_style('-st-icon-style: symbolic;');
+    return ic;
 }
 
 /* ---- Integration with the "Liquid Glass" extension ----
@@ -630,9 +636,9 @@ function _updateWidgetIconColor(widget, on) {
     const icons = findIcons(widget);
     for (const ic of icons) {
         if (on) {
-            ic.set_style('color: #000000 !important; -st-icon-foreground-color: #000000 !important;');
+            ic.set_style('color: #000000 !important; -st-icon-foreground-color: #000000 !important; -st-icon-style: symbolic;');
         } else {
-            ic.set_style('color: #ffffff !important; -st-icon-foreground-color: #ffffff !important;');
+            ic.set_style('color: #ffffff !important; -st-icon-foreground-color: #ffffff !important; -st-icon-style: symbolic;');
         }
     }
 }
@@ -722,6 +728,98 @@ function sliderTile(title, lowIcon, highIcon, onTrail) {
     box.add_child(row);
     box.slider = slider;
     return asGlassSlider(box);
+}
+
+function findItemTitle(item) {
+    if (!item) return '';
+    let t = item.title || item.label || '';
+    if (typeof t !== 'string' && t?.text) t = t.text;
+    if (t) return String(t);
+    if (item._title?.text) return String(item._title.text);
+    if (typeof item.get_property === 'function') {
+        try {
+            const p = item.get_property('title');
+            if (p) return String(p);
+        } catch (e) {}
+    }
+    const findLabel = (actor, depth = 0) => {
+        if (!actor || depth > 5) return '';
+        if (actor instanceof St.Label && actor.text) {
+            return actor.text;
+        }
+        if (actor.get_children) {
+            for (const child of actor.get_children()) {
+                const res = findLabel(child, depth + 1);
+                if (res) return res;
+            }
+        }
+        return '';
+    };
+    return findLabel(item);
+}
+
+function findItemSubtitle(item) {
+    if (!item) return '';
+    let s = item.subtitle || '';
+    if (typeof s !== 'string' && s?.text) s = s.text;
+    if (s) return String(s);
+    if (item._subtitle?.text) return String(item._subtitle.text);
+    if (typeof item.get_property === 'function') {
+        try {
+            const p = item.get_property('subtitle');
+            if (p) return String(p);
+        } catch (e) {}
+    }
+    return '';
+}
+
+function findItemIcon(item) {
+    if (!item) return null;
+    if (item.gicon) return item.gicon;
+    if (item.icon_name) return item.icon_name;
+    if (item.iconName) return item.iconName;
+    if (typeof item.get_property === 'function') {
+        try {
+            const g = item.get_property('gicon');
+            if (g) return g;
+        } catch (e) {}
+        try {
+            const n = item.get_property('icon-name');
+            if (n) return n;
+        } catch (e) {}
+    }
+    if (item._icon) {
+        const ic = item._icon.gicon || item._icon.icon_name;
+        if (ic) return ic;
+    }
+    const findInActor = (actor, depth = 0) => {
+        if (!actor || depth > 6) return null;
+        if (actor instanceof St.Icon) {
+            const name = actor.icon_name || '';
+            if (name !== 'go-next-symbolic' && name !== 'pan-end-symbolic') {
+                const src = actor.gicon || actor.icon_name;
+                if (src) return src;
+            }
+        }
+        if (actor.get_children) {
+            for (const child of actor.get_children()) {
+                const res = findInActor(child, depth + 1);
+                if (res) return res;
+            }
+        }
+        return null;
+    };
+    const found = findInActor(item);
+    if (found) return found;
+
+    // Direct fallback for nosleep extension icon
+    const title = findItemTitle(item).toLowerCase();
+    if (title.includes('stay awake') || title.includes('nosleep')) {
+        const nosleepIconPath = `${GLib.get_home_dir()}/.local/share/gnome-shell/extensions/nosleep@ilyasturki.com/icons/nosleep-symbolic.svg`;
+        if (GLib.file_test(nosleepIconPath, GLib.FileTest.EXISTS))
+            return Gio.icon_new_for_string(nosleepIconPath);
+    }
+    return null;
 }
 
 /* ---------- extension ---------- */
@@ -969,6 +1067,13 @@ export default class MacControlCentre extends Extension {
         return false;
     }
 
+    _openExtMenu(item, anchor) {
+        this._extMenuTarget = item;
+        if (this._pan?.open('ext_menu', anchor))
+            return true;
+        return false;
+    }
+
     _startEntrance() {
         loadAnim();
         const gen = ++this._openGen;
@@ -1045,9 +1150,14 @@ export default class MacControlCentre extends Extension {
         this._panel = panel;
 
         /* Left / right columns */
-        const top = new St.BoxLayout({style_class: 'mac-row'});
+        const top = new St.BoxLayout({style_class: 'mac-row', y_align: Clutter.ActorAlign.START});
         const left = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-col'});
-        const right = new St.BoxLayout({orientation: Clutter.Orientation.VERTICAL, style_class: 'mac-col'});
+        const right = new St.BoxLayout({
+            orientation: Clutter.Orientation.VERTICAL,
+            style_class: 'mac-col',
+            y_align: Clutter.ActorAlign.START,
+            y_expand: false,
+        });
 
         this._wifi = wideTile('mc:wifi', 'Wi-Fi', '', '', 
             () => this._toggleWifi(), 
@@ -1073,7 +1183,11 @@ export default class MacControlCentre extends Extension {
 
         this._mediaTile = this._buildMedia();
         right.add_child(this._mediaTile);
-        const pair = new St.BoxLayout({style_class: 'mac-row'});
+        const pair = new St.BoxLayout({
+            style_class: 'mac-row',
+            y_align: Clutter.ActorAlign.START,
+            y_expand: false,
+        });
         this._stage = circleButton('mc:stage', '', () => {
             this._qs.menu.close();
             Main.overview.toggle();
@@ -1188,7 +1302,11 @@ export default class MacControlCentre extends Extension {
             orientation: Clutter.Orientation.VERTICAL,
             style_class: 'mac-media',
             x_expand: true,
+            y_expand: false,
+            y_align: Clutter.ActorAlign.START,
+            height: 146,
         }));
+        tile.set_height(146);
 
         // Album art in the top-left corner.
         // It already carries LG_OVERRIDE in its style (see the comment above):
@@ -1214,7 +1332,7 @@ export default class MacControlCentre extends Extension {
         const controls = new St.BoxLayout({
             style_class: 'mac-media-controls',
             x_expand: true,
-            y_expand: true,
+            y_expand: false,
             y_align: Clutter.ActorAlign.END,
         });
         const spacer = () => new St.Widget({ x_expand: true });
@@ -1653,6 +1771,18 @@ export default class MacControlCentre extends Extension {
         if (this._extPillsMap && this._extPillsMap.has(item))
             return;
 
+        const titleRaw = findItemTitle(item);
+        const titleStr = (titleRaw || '').trim().toLowerCase();
+        // Skip secondary toggle of nosleep so only a single primary pill is created
+        if (titleStr.includes('keep screen on') || titleStr.includes('pantalla encendida')) {
+            this._nosleepScreenItem = item;
+            return;
+        }
+
+        // Filter out items without a valid title or named "extension" / "extensiones"
+        if (!titleStr || titleStr === 'extension' || titleStr === 'extensiones')
+            return;
+
         const pill = this._wrapExtensionToggle(item);
         if (!pill)
             return;
@@ -1665,6 +1795,10 @@ export default class MacControlCentre extends Extension {
     }
 
     _handleExtItemRemoved(item) {
+        if (this._nosleepScreenItem === item) {
+            this._nosleepScreenItem = null;
+            return;
+        }
         if (!item || !this._extPillsMap || !this._extPillsMap.has(item))
             return;
         const pill = this._extPillsMap.get(item);
@@ -1688,30 +1822,11 @@ export default class MacControlCentre extends Extension {
     }
 
     _wrapExtensionToggle(item) {
-        let initialTitle = item.title || item.label || '';
-        if (typeof initialTitle !== 'string' && initialTitle?.text)
-            initialTitle = initialTitle.text;
-        if (!initialTitle) {
-            try {
-                const l = item.get_children?.().find(c => c instanceof St.Label);
-                if (l?.text) initialTitle = l.text;
-            } catch (e) {}
-        }
-        if (!initialTitle) initialTitle = 'Extension';
-
-        let initialSub = item.subtitle || '';
-        if (typeof initialSub !== 'string' && initialSub?.text)
-            initialSub = initialSub.text;
-        if (!initialSub) initialSub = '';
-
-        let iconSource = item.gicon || item.icon_name || item.iconName || null;
-        if (!iconSource) {
-            try {
-                const found = item.get_children?.().find(c => c instanceof St.Icon) ||
-                              item._box?.get_children?.().find(c => c instanceof St.Icon);
-                if (found) iconSource = found.gicon || found.icon_name;
-            } catch (e) {}
-        }
+        let initialTitle = (findItemTitle(item) || '').trim();
+        if (!initialTitle || initialTitle.toLowerCase() === 'extension' || initialTitle.toLowerCase() === 'extensiones')
+            return null;
+        let initialSub = findItemSubtitle(item);
+        let iconSource = findItemIcon(item);
 
         const pill = new St.BoxLayout({
             style_class: 'mac-tile',
@@ -1758,6 +1873,7 @@ export default class MacControlCentre extends Extension {
             style_class: 'mac-sub',
             reactive: false,
             can_focus: false,
+            visible: Boolean(initialSub),
         });
         for (const l of [t, s])
             l.clutter_text.ellipsize = Pango.EllipsizeMode.END;
@@ -1768,6 +1884,25 @@ export default class MacControlCentre extends Extension {
 
         row.add_child(bubble);
         row.add_child(textBtn);
+
+        const hasMenu = Boolean(item.hasMenu || item.menu);
+        let chevron = null;
+        if (hasMenu) {
+            chevron = new St.Button({
+                style_class: 'mac-tile-chevron-btn',
+                y_align: Clutter.ActorAlign.CENTER,
+                can_focus: true,
+                reactive: true,
+                child: new St.Icon({
+                    icon_name: 'go-next-symbolic',
+                    icon_size: 14,
+                    style_class: 'mac-tile-chevron',
+                }),
+            });
+            bindPress(chevron, pill);
+            row.add_child(chevron);
+        }
+
         pill.add_child(row);
 
         pill._bubble = bubble;
@@ -1780,61 +1915,66 @@ export default class MacControlCentre extends Extension {
             pill._macPopSyncPending = true;
             pop(pill);
             try {
+                if (typeof item.emit === 'function') {
+                    item.emit('clicked', Clutter.BUTTON_PRIMARY || 1);
+                    return;
+                }
+            } catch (e) {}
+            try {
                 if (typeof item.fake_release === 'function') {
                     item.fake_release();
                     return;
                 }
             } catch (e) {}
             try {
-                const first = item._box?.get_first_child?.();
-                if (first && typeof first.fake_release === 'function') {
-                    first.fake_release();
-                    return;
-                }
-            } catch (e) {}
-            try {
                 if (item.toggle_mode !== undefined && item.toggle_mode)
                     item.checked = !item.checked;
-                item.emit('clicked', Clutter.BUTTON_PRIMARY || 1);
-            } catch (err) {
-                console.warn(`macos-cc: failed to trigger extension item: ${err}`);
-            }
+            } catch (e) {}
         };
 
         bubble.connect('clicked', () => triggerAction());
 
-        textBtn.connect('clicked', () => {
-            if (item.menu && typeof item.menu.open === 'function') {
-                if (item.menu.isOpen)
-                    item.menu.close();
-                else
-                    item.menu.open();
-            } else if (item._menuButton && typeof item._menuButton.fake_release === 'function') {
-                item._menuButton.fake_release();
-            } else {
-                triggerAction();
+        if (hasMenu) {
+            textBtn.connect('clicked', () => {
+                this._openExtMenu(item, pill);
+            });
+            if (chevron) {
+                chevron.connect('clicked', () => {
+                    this._openExtMenu(item, pill);
+                });
             }
-        });
+        } else {
+            textBtn.connect('clicked', () => {
+                triggerAction();
+            });
+        }
 
         const syncFromItem = () => {
             const isChecked = Boolean(item.checked);
             setOn(bubble, isChecked, pill);
 
-            let curTitle = item.title || item.label || '';
-            if (typeof curTitle !== 'string' && curTitle?.text)
-                curTitle = curTitle.text;
+            const curTitle = findItemTitle(item);
             if (curTitle && t.text !== curTitle)
                 t.text = String(curTitle);
 
-            let curSub = item.subtitle || '';
-            if (typeof curSub !== 'string' && curSub?.text)
-                curSub = curSub.text;
-            if (s.text !== (curSub ? String(curSub) : ''))
-                s.text = curSub ? String(curSub) : '';
+            const curSub = findItemSubtitle(item);
+            if (curSub) {
+                s.text = String(curSub);
+                s.visible = true;
+            } else {
+                s.text = '';
+                s.visible = false;
+            }
 
-            let curIcon = item.gicon || item.icon_name || item.iconName || null;
+            const curIcon = findItemIcon(item);
             if (curIcon) {
-                bubble.set_child(icon(curIcon));
+                const currentIconChild = bubble.get_child();
+                const needsUpdate = !currentIconChild || 
+                    (curIcon instanceof Gio.Icon && currentIconChild.gicon !== curIcon) ||
+                    (typeof curIcon === 'string' && currentIconChild.icon_name !== curIcon);
+                if (needsUpdate) {
+                    bubble.set_child(icon(curIcon));
+                }
                 _updateWidgetIconColor(bubble, isChecked);
             }
 
@@ -1844,10 +1984,20 @@ export default class MacControlCentre extends Extension {
         syncFromItem();
 
         const signals = [];
-        const watchProps = ['checked', 'title', 'subtitle', 'icon-name', 'gicon', 'visible'];
+        const watchProps = ['checked', 'title', 'subtitle', 'icon-name', 'gicon', 'visible', 'menu-enabled'];
         for (const prop of watchProps) {
             try {
                 const sid = item.connect(`notify::${prop}`, () => syncFromItem());
+                signals.push(sid);
+            } catch (e) {}
+        }
+        if (item.menu) {
+            try {
+                const sid = item.menu.connect('open-state-changed', (_m, isOpen) => {
+                    if (isOpen && !this._pan?._isOpen) {
+                        this._openExtMenu(item, pill);
+                    }
+                });
                 signals.push(sid);
             } catch (e) {}
         }
